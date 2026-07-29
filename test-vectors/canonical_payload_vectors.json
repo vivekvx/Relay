@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "description": "Shared test vectors for the canonical payload encoding defined in identity/src/payload.rs. Both identity/'s Rust test suite and registry/'s Python test suite load this SAME file and must produce byte-identical encoded output for every vector. This is the drift safeguard flagged as a judgment call in the previous registry task: registry/services/canonical_payload.py is an independent Python reimplementation of this format, and this file makes any future divergence between the two implementations a loud, immediate test failure instead of a silent one.",
+  "vectors": [
+    {
+      "name": "basic_ask",
+      "sender": "vivek",
+      "recipient": "rohan",
+      "request_type": "ask",
+      "timestamp": 1800000000,
+      "nonce": "0123456789abcdef0123456789abcdef",
+      "expected_hex": "00000005766976656b00000005726f68616e0000000361736b000000006b49d200000000203031323334353637383961626364656630313233343536373839616263646566"
+    },
+    {
+      "name": "basic_grant",
+      "sender": "rohan",
+      "recipient": "vivek",
+      "request_type": "grant",
+      "timestamp": 1,
+      "nonce": "ffffffffffffffffffffffffffffffff",
+      "expected_hex": "00000005726f68616e00000005766976656b000000056772616e740000000000000001000000206666666666666666666666666666666666666666666666666666666666666666"
+    },
+    {
+      "name": "zero_timestamp",
+      "sender": "a",
+      "recipient": "b",
+      "request_type": "revoke",
+      "timestamp": 0,
+      "nonce": "00000000000000000000000000000000",
+      "expected_hex": "00000001610000000162000000067265766f6b650000000000000000000000203030303030303030303030303030303030303030303030303030303030303030"
+    },
+    {
+      "name": "max_timestamp",
+      "sender": "alice",
+      "recipient": "bob",
+      "request_type": "ask",
+      "timestamp": 18446744073709551615,
+      "nonce": "deadbeefdeadbeefdeadbeefdeadbeef",
+      "expected_hex": "00000005616c69636500000003626f620000000361736bffffffffffffffff000000206465616462656566646561646265656664656164626565666465616462656566"
+    },
+    {
+      "name": "unicode_handles",
+      "sender": "vivék",
+      "recipient": "üser",
+      "request_type": "ask",
+      "timestamp": 1234567890,
+      "nonce": "1111111111111111111111111111111a",
+      "expected_hex": "00000006766976c3a96b00000005c3bc7365720000000361736b00000000499602d2000000203131313131313131313131313131313131313131313131313131313131313161"
+    }
+  ]
+}
