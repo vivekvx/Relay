@@ -1,0 +1,12 @@
+[package]
+name = "relay-identity-py"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+name = "relay_identity"
+crate-type = ["cdylib"]
+
+[dependencies]
+relay-identity = { path = ".." }
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }

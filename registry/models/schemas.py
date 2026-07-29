@@ -31,12 +31,15 @@ class PendingRelayItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     sender: str
+    recipient: str
     request_type: str
+    nonce: str
     request_ts: int
     payload_hex: str
     signature_hex: str
     content_ciphertext_hex: str | None = None
     enqueued_at: datetime
+    delivered_at: datetime | None = None
 
 
 class CreateGrantRequest(BaseModel):
@@ -46,11 +49,17 @@ class CreateGrantRequest(BaseModel):
     grant_type: str = Field(pattern=r"^(standing|ad_hoc)$")
     scope_capsule_ids: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+    timestamp: int
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+    signature_hex: str = Field(pattern=r"^[0-9a-f]{128}$")
 
 
 class RevokeGrantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     grant_id: str
+    timestamp: int
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+    signature_hex: str = Field(pattern=r"^[0-9a-f]{128}$")
 
 
 class CreateApprovalRequestRequest(BaseModel):

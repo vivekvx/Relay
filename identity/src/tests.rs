@@ -7,9 +7,9 @@
 use crate::encryption::{decrypt, encrypt, export_encryption_public_key_hex, generate_encryption_keypair};
 use crate::keygen::{export_public_key_hex, generate_keypair};
 use crate::payload::RequestPayload;
-use crate::signing::sign_payload;
+use crate::signing::{sign_bytes, sign_payload};
 use crate::storage::KeyStore;
-use crate::verification::{verify_payload, VerificationError, DEFAULT_MAX_REQUEST_AGE_SECS};
+use crate::verification::{verify_bytes, verify_payload, VerificationError, DEFAULT_MAX_REQUEST_AGE_SECS};
 
 const NOW: u64 = 1_800_000_000;
 const VALID_NONCE: &str = "0123456789abcdef0123456789abcdef";
@@ -237,6 +237,37 @@ fn encryption_public_key_export_is_hex_and_distinct_from_signing_key() {
     let (_signing_key, verifying_key) = generate_keypair();
     let signing_hex = export_public_key_hex(&verifying_key);
     assert_ne!(hex, signing_hex);
+}
+
+// ---------------------------- sign_bytes / verify_bytes ----------------------------
+
+#[test]
+fn sign_bytes_then_verify_bytes_round_trips() {
+    let (private_key, public_key) = generate_keypair();
+    let message = b"grantor=rohan;grantee=vivek;capsule=c1";
+
+    let signature = sign_bytes(&private_key, message);
+    assert!(verify_bytes(message, &signature, &public_key));
+}
+
+#[test]
+fn tampered_message_fails_verify_bytes() {
+    let (private_key, public_key) = generate_keypair();
+    let message = b"grantor=rohan;grantee=vivek;capsule=c1";
+    let signature = sign_bytes(&private_key, message);
+
+    let tampered = b"grantor=rohan;grantee=vivek;capsule=c2";
+    assert!(!verify_bytes(tampered, &signature, &public_key));
+}
+
+#[test]
+fn wrong_key_fails_verify_bytes() {
+    let (private_key, _public_key) = generate_keypair();
+    let (_other_private_key, other_public_key) = generate_keypair();
+    let message = b"grantor=rohan;grantee=vivek;capsule=c1";
+    let signature = sign_bytes(&private_key, message);
+
+    assert!(!verify_bytes(message, &signature, &other_public_key));
 }
 
 // ---------------------- shared canonical-payload test vectors ----------------------

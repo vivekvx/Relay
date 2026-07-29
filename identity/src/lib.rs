@@ -19,10 +19,10 @@ pub use encryption::{
 };
 pub use keygen::{export_public_key_hex, generate_keypair, PrivateKeyMaterial};
 pub use payload::{PayloadError, RequestPayload, NONCE_HEX_LEN};
-pub use signing::sign_payload;
+pub use signing::{sign_bytes, sign_payload};
 pub use storage::KeyStore;
 pub use verification::{
-    verify_payload, VerificationError, VerifiedRequest, DEFAULT_MAX_REQUEST_AGE_SECS,
+    verify_bytes, verify_payload, VerificationError, VerifiedRequest, DEFAULT_MAX_REQUEST_AGE_SECS,
 };
 
 pub use crypto_box::{PublicKey as EncryptionPublicKey, SecretKey as EncryptionSecretKey};

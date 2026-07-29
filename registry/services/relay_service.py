@@ -256,6 +256,14 @@ def fetch_pending(session: Session, recipient: str) -> list[dict]:
     result = []
     for row in rows:
         item = dict(row)
+        # `payload` (LargeBinary) is not valid UTF-8 in general (it's
+        # identity/'s canonical byte encoding: length-prefixed fields, an
+        # 8-byte big-endian timestamp) — must be hex-encoded before this
+        # dict is ever handed to a JSON response, same as
+        # content_ciphertext below. Key renamed to payload_hex to match
+        # RelaySubmitRequest/PendingRelayItem's existing field name.
+        payload = item.pop("payload")
+        item["payload_hex"] = payload.hex()
         ciphertext = item.pop("content_ciphertext", None)
         item["content_ciphertext_hex"] = ciphertext.hex() if ciphertext is not None else None
         result.append(item)

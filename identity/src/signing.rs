@@ -15,3 +15,14 @@ pub fn sign_payload(key: &PrivateKeyMaterial, payload: &RequestPayload) -> (Vec<
     let signature = key.signing_key().sign(&canonical_bytes);
     (canonical_bytes, signature)
 }
+
+/// Signs arbitrary bytes directly — for callers whose signed data isn't
+/// shaped like RequestPayload's fixed 5 fields (e.g. a grant record's
+/// grantor/grantee/capsule_ids/expires_at). `sign_payload` stays the
+/// right choice for anything that IS an ask/relay request; this exists
+/// so callers with a different, equally-legitimate canonical encoding
+/// don't have to force their data through RequestPayload's shape to get
+/// a real signature instead of reimplementing Ed25519 themselves.
+pub fn sign_bytes(key: &PrivateKeyMaterial, message: &[u8]) -> Signature {
+    key.signing_key().sign(message)
+}

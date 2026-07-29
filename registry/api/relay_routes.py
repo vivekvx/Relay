@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from registry.db import get_session
-from registry.models.schemas import RelaySubmitRequest
+from registry.models.schemas import PendingRelayItem, RelaySubmitRequest
 from registry.services import relay_service
 
 router = APIRouter(prefix="/relay", tags=["relay"])
@@ -48,6 +48,6 @@ def submit_relay_request(
     return {"id": item_id}
 
 
-@router.get("/pending/{recipient}")
+@router.get("/pending/{recipient}", response_model=list[PendingRelayItem])
 def get_pending_requests(recipient: str, session: Session = Depends(get_session)):
     return relay_service.fetch_pending(session, recipient)

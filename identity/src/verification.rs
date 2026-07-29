@@ -91,3 +91,13 @@ pub fn verify_payload(
         payload,
     })
 }
+
+/// Verifies `signature` over arbitrary `message` bytes against
+/// `public_key` — the generic counterpart to `sign_bytes` (signing.rs).
+/// No timestamp/nonce/replay handling here (there's no assumed field
+/// shape to check them in); a caller with freshness/replay
+/// requirements for its own byte format checks those itself, same as
+/// verify_payload's caller already does for nonce persistence.
+pub fn verify_bytes(message: &[u8], signature: &Signature, public_key: &VerifyingKey) -> bool {
+    public_key.verify(message, signature).is_ok()
+}
