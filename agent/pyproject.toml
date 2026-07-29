@@ -1,0 +1,6 @@
+[project]
+name = "relay-agent"
+version = "0.0.0"
+description = "Relay local MCP server + capsule store, runs on each user's machine (PRD.md §4.2, §7)"
+requires-python = ">=3.12"
+dependencies = []

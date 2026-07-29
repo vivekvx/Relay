@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+target/
+Cargo.lock
+*.db
+*.sqlite3
+.env
+.DS_Store
+*.pem
+*.key

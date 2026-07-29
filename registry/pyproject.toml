@@ -1,0 +1,6 @@
+[project]
+name = "relay-registry"
+version = "0.0.0"
+description = "Relay hosted registry: identity/routing/audit metadata only (PRD.md §4.2, §7)"
+requires-python = ">=3.12"
+dependencies = []
