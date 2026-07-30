@@ -19,10 +19,19 @@
 -- encrypt query content end-to-end (identity/ARCHITECTURE.md "Why two
 -- keypairs"). Both columns use the same 64-hex-char shape check —
 -- separate keys, same structural validation pattern.
+-- relay_number: an OPAQUE routing identifier, separate from handle —
+-- same category of data as handle (routing metadata, PRD.md §4.2), not
+-- content, so it belongs in this table exactly like handle/public keys
+-- already do; this does not widen the registry's hard boundary (see
+-- registry/ARCHITECTURE.md). Server-generated at registration (never
+-- client-supplied — a client choosing its own opaque id would let it
+-- pick something guessable/colliding, or claim someone else's), 8 lower-
+-- hex chars, same shape-check convention as public_key_hex.
 CREATE TABLE IF NOT EXISTS identities (
     handle                  TEXT PRIMARY KEY,
     public_key_hex          TEXT NOT NULL CHECK (public_key_hex ~ '^[0-9a-f]{64}$'),
     x25519_public_key_hex   TEXT NOT NULL CHECK (x25519_public_key_hex ~ '^[0-9a-f]{64}$'),
+    relay_number            TEXT NOT NULL UNIQUE CHECK (relay_number ~ '^[0-9a-f]{8}$'),
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

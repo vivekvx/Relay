@@ -26,6 +26,7 @@ identities = Table(
     Column("handle", Text, primary_key=True),
     Column("public_key_hex", Text, nullable=False),  # Ed25519, signing — unchanged
     Column("x25519_public_key_hex", Text, nullable=False),  # X25519, encryption — new
+    Column("relay_number", Text, nullable=False, unique=True),  # opaque routing id, server-generated
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 

@@ -1,0 +1,4 @@
+handle = "vivek"
+capsule_dir = "scripts/manual-walkthrough/vivek-capsules"
+key_dir = "scripts/manual-walkthrough/vivek-home/keys"
+registry_url = "http://localhost:8000"

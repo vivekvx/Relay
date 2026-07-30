@@ -10,3 +10,6 @@ Cargo.lock
 .DS_Store
 *.pem
 *.key
+# Machine-specific MCP registration (absolute local paths) — every
+# developer/user generates their own, not a shared file.
+.mcp.json

@@ -204,3 +204,14 @@ transitions it to `denied` transactionally before returning it.
    specified anywhere in PRD.md — sized generously for short query
    text plus sealed-box overhead (48 bytes: 32-byte ephemeral public
    key + 16-byte Poly1305 tag), not derived from any stated requirement.
+9. **Multi-turn `relay ask` conversation threading (`agent/wiring/
+   threads.py`) required zero changes here.** That task explicitly
+   asked to re-examine this file's hard boundary before deciding what
+   thread metadata the registry may hold — the answer: none at all, not
+   even an opaque thread_id. A thread_id travels only inside
+   `content_ciphertext` (the same already-encrypted channel
+   `in_reply_to_nonce` uses), because message routing already works
+   entirely off `sender`/`recipient` handles and needs no conversation
+   concept. No column, schema change, or endpoint was added. See
+   `agent/ARCHITECTURE.md`'s "Conversation threading" section for the
+   full design.

@@ -45,7 +45,10 @@ class RegistryClient:
 
     # ---- identities ----
 
-    def register_identity(self, handle: str, public_key_hex: str, x25519_public_key_hex: str) -> None:
+    def register_identity(self, handle: str, public_key_hex: str, x25519_public_key_hex: str) -> dict[str, Any]:
+        """Returns {"handle", "relay_number"} — the relay_number is
+        server-generated (registry/services/identity_service.py), never
+        chosen by this client."""
         response = self.http.post(
             f"{self.base_url}/identities",
             json={
@@ -55,9 +58,20 @@ class RegistryClient:
             },
         )
         self._raise_for_rejection(response)
+        return response.json()
 
     def get_identity(self, handle: str) -> dict[str, Any] | None:
         response = self.http.get(f"{self.base_url}/identities/{handle}")
+        if response.status_code == 404:
+            return None
+        self._raise_for_rejection(response)
+        return response.json()
+
+    def get_identity_by_relay_number(self, relay_number: str) -> dict[str, Any] | None:
+        """Contacts (wiring/contacts.py) resolve a saved local name to a
+        relay_number, then this to the actual handle — mirrors
+        get_identity exactly, just keyed the other way."""
+        response = self.http.get(f"{self.base_url}/identities/by-relay-number/{relay_number}")
         if response.status_code == 404:
             return None
         self._raise_for_rejection(response)

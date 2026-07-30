@@ -31,7 +31,7 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 # deliberately keeps the check to the columns that motivated it rather
 # than trying to diff the entire schema.
 REQUIRED_COLUMNS_IF_POPULATED = {
-    "identities": {"x25519_public_key_hex"},
+    "identities": {"x25519_public_key_hex", "relay_number"},
     "pending_relay_queue": {"content_ciphertext"},
 }
 

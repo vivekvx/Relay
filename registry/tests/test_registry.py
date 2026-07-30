@@ -431,6 +431,7 @@ def test_migrate_refuses_populated_database_missing_expected_column(database_url
     apply_schema(scratch_engine)
     with scratch_engine.begin() as conn:
         conn.execute(text("ALTER TABLE identities DROP COLUMN x25519_public_key_hex"))
+        conn.execute(text("ALTER TABLE identities DROP COLUMN relay_number"))
         conn.execute(
             text(
                 "INSERT INTO identities (handle, public_key_hex) VALUES (:h, :k)"

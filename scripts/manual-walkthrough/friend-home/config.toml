@@ -1,0 +1,4 @@
+handle = "friend"
+capsule_dir = "scripts/manual-walkthrough/friend-capsules"
+key_dir = "scripts/manual-walkthrough/friend-home/keys"
+registry_url = "http://localhost:8000"

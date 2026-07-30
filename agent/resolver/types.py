@@ -79,6 +79,17 @@ class ApprovalRequest:
     expiry_duration: timedelta
     candidate_capsule_ids: tuple[str, ...] = ()
     state: ApprovalState = ApprovalState.PENDING
+    # Structured pre-ask context (requester-supplied) — purely informational
+    # display for the human approver. NEVER read by resolve_scope or
+    # search_candidates: candidate search and scope resolution are based
+    # on `query` alone, identical logic whether these are set or not.
+    reason: str = ""
+    urgency: str = ""
+    # Anti-enumeration advisory (recipient-side, computed from local
+    # disclosure history before this request is shown) — also purely
+    # informational; never affects which capsules resolve_scope permits
+    # or which candidates search_candidates surfaces.
+    enumeration_warning: str | None = None
 
     @property
     def expires_at(self) -> datetime:

@@ -1,6 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "relay-agent"
 version = "0.0.0"
 description = "Relay local MCP server + capsule store, runs on each user's machine (PRD.md §4.2, §7)"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["httpx", "mcp"]
+
+[project.scripts]
+relay = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli", "mcp_server"]
+
+[tool.setuptools.packages.find]
+include = ["resolver*", "approval*", "wiring*", "capsules*"]

@@ -34,11 +34,19 @@ def render_request(
 ) -> str:
     lines = [
         f"Request from {request.sender}",
-        f'  "{request.query}"',
+        f'  Asking: "{request.query}"',
+        f'  Reason: "{request.reason}"' if request.reason else "  Reason: (no reason given)",
+        f"  Urgency: {request.urgency}" if request.urgency else "  Urgency: not time-sensitive",
         f"Expires in: {format_time_remaining(request, now=now)}",
+    ]
+    if request.enumeration_warning:
+        lines += ["", request.enumeration_warning]
+    lines += [
         "",
         "Candidate documents:",
     ]
+    if not candidates:
+        lines.append("  (none found)")
     for i, capsule in enumerate(candidates, start=1):
         tags = ", ".join(sorted(capsule.tags)) or "(no tags)"
         lines.append(f"  [{i}] {capsule.id} — tags: {tags}")
@@ -47,7 +55,11 @@ def render_request(
             lines.append(f"      why matched: {match.match_reason}")
     lines += [
         "",
-        "Choose: (w)hole doc(s) / (e)xcerpt / (d)eny / (m)anual answer",
+        "How do you want to respond?",
+        "  [w] Share the whole document",
+        "  [e] Share only part of it (you'll pick the section)",
+        "  [d] Don't share anything",
+        "  [m] Skip the document, just type a short answer instead",
     ]
     return "\n".join(lines)
 

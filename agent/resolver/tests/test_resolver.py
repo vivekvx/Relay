@@ -7,9 +7,11 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 
+from datetime import timedelta
+
 from resolver.rate_limiter import RateLimiter
-from resolver.resolver import resolve_scope, search_candidates
-from resolver.types import Capsule, Grant, GrantType, SenderIdentity
+from resolver.resolver import enumeration_flag, resolve_scope, search_candidates, split_thread_candidates
+from resolver.types import ApprovalRequest, ApprovalState, Capsule, Grant, GrantType, SenderIdentity
 
 NOW = datetime(2026, 7, 29, 12, 0, 0)
 
@@ -215,6 +217,88 @@ class TestCandidateSearch(unittest.TestCase):
         r1 = search_candidates(SenderIdentity("vivek"), adversarial, capsules)
         r2 = search_candidates(SenderIdentity("vivek"), adversarial, capsules)
         self.assertEqual(r1, r2)
+
+
+class TestSplitThreadCandidates(unittest.TestCase):
+    """split_thread_candidates is the ONLY test flows.py's ad hoc branch
+    uses to decide same-scope vs. new-scope follow-up (spec CASE A/B) —
+    pure set membership, no query text involved at all."""
+
+    def test_all_candidates_already_approved_yields_no_new_ids(self):
+        new_ids, reusable = split_thread_candidates(("c1", "c2"), frozenset({"c1", "c2"}))
+        self.assertEqual(new_ids, ())
+        self.assertEqual(reusable, frozenset({"c1", "c2"}))
+
+    def test_no_candidates_already_approved_yields_all_as_new(self):
+        new_ids, reusable = split_thread_candidates(("c1", "c2"), frozenset())
+        self.assertEqual(new_ids, ("c1", "c2"))
+        self.assertEqual(reusable, frozenset())
+
+    def test_mixed_candidates_splits_correctly(self):
+        new_ids, reusable = split_thread_candidates(("c1", "c2", "c3"), frozenset({"c1"}))
+        self.assertEqual(new_ids, ("c2", "c3"))
+        self.assertEqual(reusable, frozenset({"c1"}))
+
+    def test_empty_candidates_yields_nothing(self):
+        new_ids, reusable = split_thread_candidates((), frozenset({"c1"}))
+        self.assertEqual(new_ids, ())
+        self.assertEqual(reusable, frozenset())
+
+    def test_approved_capsule_not_a_candidate_this_time_is_not_reusable(self):
+        # An approved capsule from an earlier, unrelated question in the
+        # same thread must not appear in `reusable` just because it's in
+        # approved_capsule_ids — only candidates THIS query surfaced.
+        new_ids, reusable = split_thread_candidates(("c2",), frozenset({"c1"}))
+        self.assertEqual(new_ids, ("c2",))
+        self.assertEqual(reusable, frozenset())
+
+
+class TestEnumerationFlag(unittest.TestCase):
+    """Pure math, no store/log involved — PRD.md §5 R3's salami-slicing
+    guard. Default thresholds: >40% of the library OR >15 distinct
+    capsules, whichever fires first."""
+
+    def test_normal_low_volume_never_fires(self):
+        self.assertFalse(enumeration_flag(2, 12))  # ~17%, well under 40%
+
+    def test_fraction_threshold_exceeded_fires(self):
+        self.assertTrue(enumeration_flag(9, 12))  # 75% > 40%
+
+    def test_exactly_at_fraction_threshold_does_not_fire(self):
+        self.assertFalse(enumeration_flag(4, 10, fraction_threshold=0.4))  # exactly 40%, not OVER it
+
+    def test_absolute_threshold_exceeded_fires_even_under_fraction(self):
+        # 16 of 1000 is 1.6% (way under 40%) but over the absolute cap —
+        # "whichever is more restrictive" means either condition alone flags.
+        self.assertTrue(enumeration_flag(16, 1000))
+
+    def test_zero_total_capsules_never_fires(self):
+        self.assertFalse(enumeration_flag(0, 0))
+
+    def test_custom_thresholds_respected(self):
+        self.assertTrue(enumeration_flag(3, 100, absolute_threshold=2))
+        self.assertFalse(enumeration_flag(3, 100, absolute_threshold=5, fraction_threshold=0.9))
+
+
+class TestStructuredFieldsDontAffectResolution(unittest.TestCase):
+    """Deliverable: identical questions with different reason/urgency
+    metadata must produce identical resolved candidate sets — reason/
+    urgency are display-only fields on ApprovalRequest that
+    search_candidates never even receives as arguments."""
+
+    def test_reason_and_urgency_never_change_search_candidates_result(self):
+        capsules = list(make_capsules().values())
+        request_a = ApprovalRequest(
+            sender="vivek", query="webhook retry backoff", created_at=NOW, expiry_duration=timedelta(hours=5),
+            reason="debugging a similar issue", urgency="urgent",
+        )
+        request_b = ApprovalRequest(
+            sender="vivek", query="webhook retry backoff", created_at=NOW, expiry_duration=timedelta(hours=5),
+            reason="", urgency="",
+        )
+        result_a = search_candidates(SenderIdentity(request_a.sender), request_a.query, capsules)
+        result_b = search_candidates(SenderIdentity(request_b.sender), request_b.query, capsules)
+        self.assertEqual(result_a, result_b)
 
 
 if __name__ == "__main__":

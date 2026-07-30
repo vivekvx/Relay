@@ -175,3 +175,253 @@ proceed correctly:
    explicit rejection response. Matches "fails closed" — no signed
    channel exists to a sender whose signature didn't verify, so there is
    nothing safe to sign a rejection with in reply.
+
+## Conversation threading (`relay ask --thread`)
+
+Multi-turn follow-up questions in the same conversation. The core
+design question — and its resolution — from the task that built this:
+
+**CASE A (same-scope follow-up)** — every capsule a new question's
+`resolver.search_candidates` surfaces is already in the conversation's
+approved-scope-set → skip the live approval prompt; answer immediately.
+**CASE B (new-scope follow-up)** — the search surfaces at least one
+capsule not yet in that set → live approval, but scoped to *only* the
+new capsule(s); already-approved ones are never re-prompted.
+
+The only test for A vs. B is `resolver.resolver.split_thread_candidates`
+— pure set membership (candidate IDs vs. `approved_capsule_ids`), no
+query text involved, same deterministic-before-any-LLM standard as
+`resolve_scope` itself (PRD.md §5 R1/R7/R8). `process_incoming_ask` in
+`wiring/flows.py` is the only caller; it never compares query text for
+"relatedness" — that would be exactly the kind of LLM-adjacent judgment
+call this project's non-negotiable invariants forbid.
+
+**Data model** (`wiring/threads.py`): `ThreadRecord` — `thread_id`,
+`sender`, `recipient`, `created_at`, `last_activity_at`,
+`approved_capsule_ids` (grows only via whole-document approvals — see
+below), `messages` (question/answer/outcome log for `relay thread
+<id>`). One JSON file per local identity (`ThreadStore`), entirely
+local — never synced anywhere.
+
+**Where thread_id travels:** inside the already end-to-end-encrypted
+`content_ciphertext` payload, both directions — `{"question":...,
+"thread_id":...}` on the way in, an added `"thread_id"` field on the
+existing response envelope on the way out. Same channel the response
+envelope's `in_reply_to_nonce` already uses. `RequestPayload`'s 5 fixed
+signed fields are untouched; no registry-visible field carries a
+thread_id. **Resolved decision on the registry hard-boundary question
+this task asked to re-examine: the registry needs to know nothing
+about threads at all** — not even an opaque routing token — because
+message routing already works via sender/recipient handles and the
+existing nonce/`in_reply_to_nonce` pairing has no need for a
+conversation concept. Zero registry changes were needed for this
+feature.
+
+**Only whole-document (`APPROVED_WHOLE`) approvals extend
+`approved_capsule_ids`.** An `APPROVED_EXCERPT` approval does NOT — an
+approver consenting to share one paragraph must never let a later
+follow-up auto-continue into the rest of that same document without
+its own approval. This is the one place the accumulation logic is
+stricter than "capsule appeared in a decision."
+
+**Thread expiry: 24h since last activity** (`DEFAULT_THREAD_INACTIVITY_
+EXPIRY`), independent of any single `ApprovalRequest`'s own 5h
+`expiry_duration` — a different kind of expiry for a different kind of
+object (a conversation vs. one pending decision). Resolved default for
+what happens on expiry: the accumulated `approved_capsule_ids` simply
+stop being trusted for auto-continuation (forces a fresh prompt); nothing
+is deleted, no thread's identity or message history is wiped. Never a
+harder failure mode than "ask again," matching "unresolved must never
+silently grant" (CLAUDE.md §2).
+
+**A fresh thread never inherits another thread's approved scope** —
+structural, not policy: `thread_id` is the sole key into
+`approved_capsule_ids`, generated fresh (same random-hex shape as a
+nonce) whenever the caller omits `--thread`/`thread_id`. Two threads
+between the same two participants, even asking the identical question,
+are two unrelated entries with two empty starting scopes.
+
+**Rate limiting is unaffected by threading** — `rate_limiter.
+check_and_record` still runs once per incoming "ask" item, before any
+thread lookup, regardless of which thread (if any) the message belongs
+to (PRD.md §5 R3).
+
+## Structured pre-ask fields (reason/urgency)
+
+`relay ask` collects two extra fields from the requester before sending
+— `reason` ("why do you need this?") and `urgency` ("is this
+time-sensitive?") — as distinct fields on the wire (bundled into the
+same JSON `content_ciphertext` payload as `question`/`thread_id`), never
+concatenated into the question string. `resolver.types.ApprovalRequest`
+carries them (`reason: str = ""`, `urgency: str = ""`), and
+`approval/render.py`'s `render_request` displays them as their own
+labeled lines. Empty defaults render as `"(no reason given)"` /
+`"not time-sensitive"` — CLI callers who omit `--reason`/`--urgent` get
+prompted interactively (`cli._resolve_reason_and_urgency`); MCP callers
+who omit them get the empty-string defaults with no prompt (an MCP tool
+call has no interactive terminal to prompt on).
+
+**Structural guarantee, not just a convention:** `resolve_scope` and
+`search_candidates` do not take `reason`/`urgency` as parameters at
+all — there is no code path by which these fields could reach either
+function, so "they never affect what capsules get matched" is true by
+the functions' own signatures, not by discipline. Proven at the
+resolver level (`resolver/tests/test_resolver.py::
+TestStructuredFieldsDontAffectResolution`) and end-to-end
+(`agent/tests/test_integration.py::
+test_reason_and_urgency_shown_but_dont_change_resolved_capsules`).
+
+## Anti-enumeration guard (PRD.md §5 R3, "salami slicing")
+
+The existing `RateLimiter` bounds volume (N requests/hour) but not
+*pattern* — a sender could stay under that limit while still
+methodically working through a recipient's entire capsule library one
+narrow question at a time. This guard adds visibility for that pattern,
+without blocking anything: the human approver still decides every
+request; this only tells them when a sender's cumulative footprint
+against their library looks broad.
+
+**The exact math** (`resolver.resolver.enumeration_flag`, pure function,
+no I/O, no LLM):
+
+```
+distinct_capsules_seen = count of distinct capsule IDs actually
+    disclosed (APPROVED_WHOLE or APPROVED_EXCERPT outcomes only — never
+    MANUAL_ANSWER/DENIED, nothing left this machine there) to this
+    sender, by THIS recipient, within a rolling window — default 30
+    days (DEFAULT_ENUMERATION_WINDOW), tracked by wiring/disclosure_log.py's
+    DisclosureLog, one JSON file per local identity, keyed by sender.
+
+total_capsule_count = len(capsules_by_id) — this recipient's total
+    number of shareable-marked capsules (same dict resolve_scope/
+    search_candidates already operate on).
+
+flagged = (distinct_capsules_seen / total_capsule_count) > 0.4   # fraction
+       OR distinct_capsules_seen > 15                             # absolute
+```
+
+Either condition alone is enough to flag — "whichever is more
+restrictive." `0.4` (`DEFAULT_ENUMERATION_FRACTION_THRESHOLD`) and `15`
+(`DEFAULT_ENUMERATION_ABSOLUTE_THRESHOLD`) are both keyword arguments on
+`enumeration_flag`, and both are threaded all the way out to
+`process_incoming_ask`'s own keyword arguments
+(`enumeration_fraction_threshold`, `enumeration_absolute_threshold`,
+`enumeration_window`) — same owner-configurable-default pattern as
+`RateLimiter.check_and_record`'s per-call `limit` override and
+`process_incoming_ask`'s own `expiry_duration` parameter. A capsule
+owner configures their own thresholds the same way they'd configure
+either of those: by passing different values into the same call.
+
+**Cumulative footprint is cross-thread by design** — it's `DisclosureLog`,
+not `ThreadStore`'s per-conversation `approved_capsule_ids` (a
+completely different local store; see "Conversation threading" above).
+A sender's footprint keeps growing across every separate thread they
+open with this recipient, because the attack this guards against is
+exactly "spread the extraction across many separate, individually
+unremarkable conversations."
+
+**Only counted when a live decision was actually made** — i.e. only in
+the ad hoc branch's `request_approval` call (CASE B or a brand-new
+thread's first message). Standing-grant disclosures are NOT counted:
+a standing grant is the human's own blanket, ongoing, already-fully-
+consented-to sharing arrangement, structurally distinct from the ad hoc
+approval flow this guard exists to add visibility into; counting it
+would just make every legitimate standing-grant conversation noisy.
+CASE A same-scope reuse also isn't re-counted (the capsule was already
+recorded the first time it was actually approved) — no double-counting
+across follow-ups in one thread.
+
+**Fires as one additional line inside the SAME approval prompt** —
+`ApprovalRequest.enumeration_warning: str | None`, computed and
+attached before `request_approval` is called, rendered by
+`render_request` right after the "Expires in" line when non-`None`.
+Never a second prompt, never a block: a normal, low-volume conversation
+computes `enumeration_flag(...) == False` and the field stays `None`,
+so nothing changes in the approver's experience at all — proven by
+`agent/tests/test_integration.py::
+test_enumeration_warning_normal_use_never_fires_then_fires_on_broad_pattern`,
+which also proves the exact fired wording and numbers for a genuinely
+broad pattern (2 of 3 capsules, 66% > 40%).
+
+## Contacts + Relay numbers
+
+`wiring/contacts.py`'s `ContactsStore` maps a local name -> an opaque
+**relay number** (never the other person's handle — same trust model as
+a phone number). Resolution (`resolve_recipient`) is additive: a saved
+contact name resolves through the registry's relay-number lookup to the
+real handle; anything not a saved contact passes through unchanged as a
+raw handle, so no existing direct-handle call site had to change.
+
+**relay_number is server-generated, never client-supplied**
+(`registry/services/identity_service.py::_generate_relay_number`, 8
+lowercase hex chars via `secrets.token_hex(4)`, retried up to 5x on the
+astronomically unlikely collision). A client choosing its own opaque id
+would let it pick something guessable or claim a value someone else
+already has — server authority here is the same trust boundary the
+registry already holds for `handle` uniqueness itself.
+
+**Registry hard boundary, re-confirmed:** `relay_number` lives in the
+same `identities` row as `handle`/public keys — routing metadata, not
+content (registry/ARCHITECTURE.md's hard boundary, unchanged). One new
+column, one new read-only lookup route
+(`GET /identities/by-relay-number/{relay_number}`, mirroring the
+existing `GET /identities/{handle}` exactly). No new table, no schema
+philosophy change. The new route **must** be registered before the
+generic `GET /identities/{handle}` route — FastAPI matches path routes
+in registration order, and `{handle}` is a single-segment wildcard that
+would otherwise swallow `by-relay-number` as a literal, nonexistent
+handle.
+
+## In-chat, both-directions approval (MCP)
+
+`relay_pending_requests` / `relay_respond_to_request` are a new
+**interface** onto the existing approval machinery — zero new decision
+logic. `relay_pending_requests` is `wiring/flows.py`'s new
+`list_pending_approvals_with_candidates`, a read-only formatter that
+recomputes `search_candidates` fresh (never a stale snapshot) purely
+for display (`match_reason`/`relevant_span`) and returns exactly what
+the terminal prompt already shows, as structured JSON.
+`relay_respond_to_request` builds a **real** `ApprovalDecision` (the
+exact same frozen dataclass `approval/interaction.py`'s terminal picker
+constructs, same `__post_init__` invariants) from structured MCP args,
+then calls the **exact same** `resolve_pending_approval` the terminal
+`relay pending` path uses — that function gained one new optional
+`decision` parameter; when supplied, it skips `request_approval`'s
+`input()` call and everything after (thread/disclosure bookkeeping,
+grant promotion, sending the response) is one shared code path, never
+duplicated. `mcp_server.py`'s `_build_decision_from_response_args` is
+the only new code, and it only translates args into that decision type
+— any decision type/field it can't map unambiguously raises
+`ValueError`, surfaced as `{"error": "ambiguous_decision", ...}` so
+Claude Code must ask a clarifying question and retry, never guess
+(proven by `test_ambiguous_decision_is_rejected_not_guessed`).
+
+**Structural guarantees carried through unchanged:** `resolve_scope`/
+`search_candidates` still never receive query text as a scope-deciding
+parameter regardless of interface; `ApprovalDecision.__post_init__`
+still enforces default-deny-on-ambiguous (the same invariant class as
+`approval/interaction.py`'s `_denied()` fallback) whether the decision
+came from a terminal picker or from MCP args; the enumeration guard and
+thread-scope logic are computed in `process_incoming_ask` itself,
+upstream of every interface (terminal, `relay pending`, or this MCP
+path) — none of them can see or bypass that computation.
+
+**Design decision on how Paul's Claude Code learns to check (task's
+explicit either/or):** option (a) — rely on the existing native
+notification (`relay serve`'s headless flow) to alert Paul outside
+Claude Code; he returns to a chat and asks something like "check my
+relay requests," and Claude Code calls `relay_pending_requests` on
+demand. **Option (b) was investigated and explicitly rejected, not
+silently skipped:** the MCP SDK actually installed in this repo (`mcp`
+2.0.0, low-level `Server`/`ClientSession` API — see this file's
+existing "Judgment call" note on which SDK shape this project targets)
+exposes no mechanism for a server to proactively push a
+message/notification INTO a client's chat session unprompted. The
+protocol's server-initiated primitives that do exist (`sampling` —
+asking the client to run an LLM completion; the logging/progress
+notification types) are not a "wake up and show the user this" channel
+— they're either request/response continuations of a call already in
+flight, or observability, not unsolicited chat injection. Given no real
+mechanism exists in this installed SDK version, (a) is not a
+compromise — it is the only structurally available option, and it
+composes cleanly with the already-built native notification.

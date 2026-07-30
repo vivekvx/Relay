@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .types import Capsule, Grant, SearchCandidate, SenderIdentity
 
@@ -100,3 +100,60 @@ def search_candidates(
         SearchCandidate(capsule_id=cid, match_reason=reason, relevant_span=span)
         for _, cid, reason, span in scored[:limit]
     )
+
+
+def split_thread_candidates(
+    candidate_ids: tuple[str, ...],
+    approved_capsule_ids: frozenset[str],
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """Deterministic thread-continuation check (no LLM, no query-content
+    involvement) — the only test for "does this follow-up need a fresh
+    approval prompt": is every candidate this query surfaced already in
+    the conversation's approved-scope-set?
+
+    Returns (new_candidate_ids, reusable_capsule_ids). `new_candidate_ids`
+    is what must go through request_approval (only the unapproved ones —
+    never re-prompting for a capsule already consented to in this thread).
+    `reusable_capsule_ids` is the subset of candidates already approved,
+    safe to answer from immediately. Same-scope follow-up (spec's CASE A)
+    is exactly "new_candidate_ids is empty and reusable_capsule_ids is
+    not"; new-scope follow-up (CASE B) is "new_candidate_ids is
+    non-empty" — every conversation-aware caller decides its branch from
+    these two return values alone, never from comparing query text."""
+    new_ids = tuple(cid for cid in candidate_ids if cid not in approved_capsule_ids)
+    reusable = frozenset(candidate_ids) & approved_capsule_ids
+    return new_ids, reusable
+
+
+# ---------------------------------------------------------------------
+# Anti-enumeration guard (PRD.md §5 R3 "salami slicing") — deterministic
+# math only, no LLM, no query content involved. Advisory, not blocking:
+# the human approver still decides; this only tells them whether the
+# sender's cumulative footprint against their capsule library looks
+# broad. See agent/ARCHITECTURE.md "Anti-enumeration guard" for the
+# exact formula and default thresholds.
+# ---------------------------------------------------------------------
+
+DEFAULT_ENUMERATION_WINDOW = timedelta(days=30)
+DEFAULT_ENUMERATION_FRACTION_THRESHOLD = 0.4  # >40% of the recipient's capsules
+DEFAULT_ENUMERATION_ABSOLUTE_THRESHOLD = 15  # or >15 distinct capsules, whichever fires first
+
+
+def enumeration_flag(
+    distinct_capsules_seen: int,
+    total_capsule_count: int,
+    *,
+    fraction_threshold: float = DEFAULT_ENUMERATION_FRACTION_THRESHOLD,
+    absolute_threshold: int = DEFAULT_ENUMERATION_ABSOLUTE_THRESHOLD,
+) -> bool:
+    """True if a sender's cumulative distinct-capsules-seen count (within
+    whatever rolling window the caller already restricted it to) exceeds
+    EITHER the fraction of the recipient's total capsule library OR the
+    absolute count — whichever is more restrictive, i.e. either
+    condition alone is enough to flag. `total_capsule_count == 0` never
+    flags (nothing to enumerate)."""
+    if total_capsule_count <= 0:
+        return False
+    exceeds_fraction = (distinct_capsules_seen / total_capsule_count) > fraction_threshold
+    exceeds_absolute = distinct_capsules_seen > absolute_threshold
+    return exceeds_fraction or exceeds_absolute

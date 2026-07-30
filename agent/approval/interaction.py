@@ -90,7 +90,7 @@ def request_approval(
 
 
 def _approve_whole(candidates: list[Capsule], input_fn: InputFn, now: datetime) -> ApprovalDecision:
-    raw = _read(input_fn, "Doc number(s), comma-separated: ")
+    raw = _read(input_fn, "Which document(s)? (enter the number, e.g. 1 or 1,2): ")
     if raw is None:
         return _denied(now)
 
@@ -117,7 +117,7 @@ def _approve_excerpt(
     now: datetime,
     match_info: dict[str, SearchCandidate] | None = None,
 ) -> ApprovalDecision:
-    raw = _read(input_fn, "Doc number: ")
+    raw = _read(input_fn, "Which document? (enter the number): ")
     if raw is None or not raw.strip().isdigit():
         return _denied(now)
     idx = int(raw.strip())
@@ -135,7 +135,7 @@ def _approve_excerpt(
     match = match_info.get(capsule.id) if match_info else None
     if match is not None and match.relevant_span is not None:
         span_start, span_end = match.relevant_span
-        raw_confirm = _read(input_fn, f"Use suggested span {span_start},{span_end}? [Y/n]: ")
+        raw_confirm = _read(input_fn, f"Share just the matched part ({span_start}-{span_end})? [Y/n]: ")
         if raw_confirm is None:
             return _denied(now)
         answer = raw_confirm.strip().lower()
@@ -148,7 +148,7 @@ def _approve_excerpt(
         if answer not in ("n", "no"):
             return _denied(now)
 
-    raw_bounds = _read(input_fn, "Enter span as 'start,end': ")
+    raw_bounds = _read(input_fn, "Which part? (enter as start,end character positions, e.g. 0,120): ")
     if raw_bounds is None:
         return _denied(now)
     parts = raw_bounds.strip().split(",")
@@ -187,7 +187,7 @@ def request_grant_promotion(
 
     raw = _read(
         input_fn,
-        f"Always allow {request.sender} this scope without asking again? [y/N]: ",
+        f"Let @{request.sender} skip approval for this topic in future? [y/N]: ",
     )
     if raw is None or raw.strip().lower() != "y":
         return None
