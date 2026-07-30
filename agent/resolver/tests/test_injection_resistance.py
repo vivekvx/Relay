@@ -97,7 +97,8 @@ class TestInjectionResistance(unittest.TestCase):
         sender = SenderIdentity("vivek")
         for adversarial_query in ADVERSARIAL_QUERIES:
             candidates = search_candidates(sender, adversarial_query, capsules)
-            self.assertNotIn("c2", candidates)
+            candidate_ids = {c.capsule_id for c in candidates}
+            self.assertNotIn("c2", candidate_ids)
 
     def test_neutral_and_adversarial_queries_produce_identical_resolved_scope(self):
         capsules = make_capsules()

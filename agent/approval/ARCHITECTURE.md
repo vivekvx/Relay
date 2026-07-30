@@ -19,31 +19,38 @@ Capsule]`, the same shape `resolver.resolve_scope` already takes — this
 module looks candidates up in it rather than receiving pre-hydrated Capsule
 objects, matching the calling convention resolver itself established.
 
-## Known upstream gap: no match-reason or span data
+## Match-reason and suggested-span (closed)
 
-`resolver.search_candidates` (as it actually exists — verified by reading
-`resolver/resolver.py`) returns `tuple[str, ...]`: bare capsule IDs, no
-score, no matched-keyword list, no relevant span. PRD.md §3.2 asks for "a
-one-line summary of why each was matched" and §8 asks for the resolver to
-"pre-highlight the relevant span" before excerpt approval. Neither exists
-in the current implementation.
+`resolver.search_candidates` returns `tuple[SearchCandidate, ...]`: each
+result carries the capsule ID plus `match_reason` (which keyword(s)
+matched content, or which tag(s) matched) and an optional `relevant_span`
+(a content offset pair; `None` for a tag-only match — an expected case,
+not an exceptional one). PRD.md §3.2's "one-line summary of why each was
+matched" and §8's "pre-highlight the relevant span" are both satisfied
+upstream now.
 
-Per explicit instruction, this module does **not** invent a reason string
-or a fake span to paper over the gap. Concretely:
+This module consumes it via an optional `match_info: dict[str,
+SearchCandidate] | None` parameter, keyed by capsule ID — a caller with no
+search results (or exercising the old flow) simply omits it, and behavior
+is unchanged from before this gap closed:
 
-- `render.render_request` lists each candidate as `[n] capsule_id — tags:
-  ...` — no "why matched" line, because there's nothing upstream to draw
-  one from.
-- `interaction._approve_excerpt` always prompts `"Enter span as
-  'start,end': "` — there is no "confirm the suggested span" shortcut,
-  because `relevant_span` never exists to confirm.
+- `render.render_request` prints a `why matched: ...` line under a
+  candidate only when `match_info` supplies one for that capsule.
+- `interaction._approve_excerpt` offers `"Use suggested span
+  {start},{end}? [Y/n]: "` only when `match_info` has a `relevant_span`
+  for the chosen capsule; declining ("n"/"no") or `match_info` lacking a
+  span falls through to the unchanged manual `"Enter span as
+  'start,end': "` prompt. Any other answer is ambiguous -> deny, same
+  default-safe rule as every other prompt here.
 
-Closing this gap means extending `resolver.search_candidates` to return
-per-candidate score/reason/span (e.g. richer than a bare ID tuple) — that's
-a resolver-side change, out of scope for this task. When it happens, only
-`render.py`/`interaction.py`'s candidate-list and excerpt-view rendering
-need to change; `types.py`'s `ApprovalDecision`/`ExcerptBounds` contract
-does not.
+`types.py`'s `ApprovalDecision`/`ExcerptBounds` contract did not need to
+change — the new data flows through as an extra rendering/prompt input,
+not a new decision shape.
+
+Not wired end-to-end yet: `wiring/flows.py` still only threads bare
+capsule IDs into `ApprovalRequest.candidate_capsule_ids` and does not
+build/pass a `match_info` map into the live terminal prompt — that's
+future work, not part of this task's scope.
 
 ## Default-safe-on-ambiguity invariant
 

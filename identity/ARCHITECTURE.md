@@ -48,16 +48,20 @@ careful usage to avoid a documented pitfall.
   encryption, or the user copying the key file elsewhere themselves.
   File permissions are a local-privilege boundary, not a confidentiality
   guarantee against the account owner.
-- Windows: no ACL-restriction equivalent is implemented (disclosed gap,
-  see "Judgment calls" below) — `create_owner_only_file` on non-Unix
-  currently offers no local-privilege protection at all.
+- Windows: no ACL-restriction equivalent is implemented. Real Windows
+  support is a real follow-up, not implemented — `create_owner_only_file`
+  on non-Unix refuses to write the private key at all (`Unsupported`
+  error) rather than writing it unprotected. A loud refusal, not a
+  best-effort warning that could go unnoticed, is correct for a
+  security-critical module.
 
 **Signature verification (`verification.rs`):**
 - Defends against: identity spoofing (PRD.md §5 R2) — a request is
   only accepted if it's signed by the private key matching the claimed
   sender's registered public key. Replay/relay abuse (R6) — every
   request must carry a nonce and a timestamp inside a configurable
-  validity window (`DEFAULT_MAX_REQUEST_AGE_SECS`, 300s).
+  validity window (`DEFAULT_MAX_REQUEST_AGE_SECS`, ±30s, symmetric —
+  resolved decision, see PRD.md §5).
 - Does NOT defend against: replay of the *same* (sender, nonce) pair
   within that window — this module has no persistence (see "What the
   caller must do" below). It also does not defend against a
@@ -155,13 +159,14 @@ never a plaintext value. Proven by
    is the conservative reading of "model vaultd's pattern," not a
    decision that it must become a daemon. Flagging for confirmation.
 2. **Windows key-file permissions are not implemented.** `storage.rs`
-   only restricts permissions on Unix (`0o600`). The non-Unix path
-   creates the file with default permissions and includes a `TODO`
-   comment disclosing the gap rather than silently claiming equivalent
-   protection. Implementing a correct Windows ACL restriction would
-   need a Windows-specific crate (out of proportion to this task's
-   scope, and not explicitly requested) — flagging rather than adding
-   it unasked.
+   only restricts permissions on Unix (`0o600`). The non-Unix path now
+   refuses outright — returns an `Unsupported` error stating secure
+   local key storage isn't implemented for this platform — rather than
+   writing an unprotected key file. Implementing a correct Windows ACL
+   restriction would need a Windows-specific crate (out of proportion to
+   this task's scope, and not explicitly requested) — flagging rather
+   than adding it unasked. Real Windows support remains a real
+   follow-up, not implemented.
 3. **`crypto-common` added as a direct dependency.** `ed25519-dalek`
    3.0's OS-backed key generation is fallible-by-design in this
    dependency generation (`rand` 0.10 / `rand_core` 0.10 moved OS

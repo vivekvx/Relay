@@ -53,40 +53,72 @@ impl KeyStore {
 // pub(crate): reused by encryption.rs's own key store (same file-
 // permission discipline for the X25519 private key) — visibility only,
 // no behavior change to the signing key storage path above.
-#[cfg(unix)]
-pub(crate) fn create_owner_only_file(path: &Path) -> io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600) // owner read/write only, set at creation time
-        .open(path)
+//
+// Non-Unix platforms (Windows) have no equivalent owner-only file
+// permission implemented here. Rather than silently writing an
+// unprotected private key file (the previous behavior — a disclosed
+// but silent gap), this refuses outright: a security-critical module
+// should fail loud, not degrade quietly to an unprotected file a
+// caller could easily miss. Real Windows support (ACL restriction via
+// the Windows security APIs) is a real follow-up, not implemented —
+// see ARCHITECTURE.md.
+//
+// The `is_unix` parameter exists so the refusal branch is unit-testable
+// on any host, including Unix CI, without actually needing to run on a
+// non-Unix machine: production code always calls the public wrappers
+// below, which pass `cfg!(unix)` — the real, compile-time-accurate
+// platform check. Tests call `*_for_platform` directly with
+// `is_unix: false` to exercise the refusal path deterministically. See
+// tests.rs's `refuses_to_write_key_file_when_platform_is_not_unix`.
+
+pub(crate) fn create_owner_only_file_for_platform(path: &Path, is_unix: bool) -> io::Result<fs::File> {
+    if !is_unix {
+        return Err(non_unix_unsupported_error());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600) // owner read/write only, set at creation time
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        unreachable!("is_unix=true was passed on a non-Unix build — production code never does this")
+    }
 }
 
-#[cfg(unix)]
+pub(crate) fn restrict_permissions_for_platform(path: &Path, is_unix: bool) -> io::Result<()> {
+    if !is_unix {
+        return Err(non_unix_unsupported_error());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        unreachable!("is_unix=true was passed on a non-Unix build — production code never does this")
+    }
+}
+
+fn non_unix_unsupported_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "secure local private-key storage (owner-only file permissions) is not yet implemented \
+         on this platform — refusing to write an unprotected private key file to disk. \
+         Windows/non-Unix support is a real follow-up, not implemented.",
+    )
+}
+
+pub(crate) fn create_owner_only_file(path: &Path) -> io::Result<fs::File> {
+    create_owner_only_file_for_platform(path, cfg!(unix))
+}
+
 pub(crate) fn restrict_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-pub(crate) fn create_owner_only_file(path: &Path) -> io::Result<fs::File> {
-    // TODO (disclosed gap, not silently skipped): no Windows ACL
-    // restriction is applied here. A correct equivalent would set an
-    // ACL granting access only to the current user (e.g. via the
-    // Windows security APIs), which is out of scope for this task —
-    // see ARCHITECTURE.md and the judgment-call note in the task
-    // summary. This path currently offers no local-privilege
-    // protection on non-Unix systems.
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn restrict_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
+    restrict_permissions_for_platform(path, cfg!(unix))
 }

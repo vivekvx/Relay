@@ -355,6 +355,9 @@ previously-seen nonce.
 *Acceptance criterion:* replaying a previously valid, correctly-signed
 request (same nonce, same or expired timestamp) must be rejected, with
 the rejection logged and zero capsules loaded on the replay attempt.
+**Clock skew tolerance: ±30 seconds, symmetric** — applied identically to
+past-expiry and future-dated timestamps (`identity/src/verification.rs`'s
+`DEFAULT_MAX_REQUEST_AGE_SECS`). Resolved decision, not a placeholder.
 
 **R7 — The LLM is never the sole security boundary.**
 The system MUST complete scope resolution deterministically and
@@ -532,3 +535,17 @@ Carried forward from `idea.md` §9:
   compromised, can it forge routing (not content) in a way that defeats
   R2 (identity spoofing) at the transport level, even though it never
   sees capsule content?
+- **Tracked risk, not urgent: canonical-encoding triplication.**
+  Canonical byte encodings now exist independently in three places:
+  `identity/` (Rust, the request-payload format), `registry/` (Python,
+  a duplicated request-payload decoder plus a separate grant-payload
+  encoder), and `agent/wiring/` (Python, a grant-payload encoder
+  matching registry's). Only the request-payload scheme is protected by
+  the shared test-vector fixture (`/test-vectors/
+  canonical_payload_vectors.json`, checked by both `identity/`'s and
+  `registry/`'s test suites); the grant-payload scheme (registry/ and
+  agent/wiring/) has no equivalent cross-implementation check — the two
+  copies could silently drift out of sync with nothing catching it.
+  Suggested future fix: extend the shared test-vector fixture to also
+  cover the grant-payload encoding, shared between `registry/` and
+  `agent/wiring/`. Not built as part of this note — documentation only.

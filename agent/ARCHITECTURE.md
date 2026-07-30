@@ -117,12 +117,16 @@ proceed correctly:
 
 ## Known gaps this task inherits (documented, not solved here)
 
-1. **`resolver.search_candidates` returns bare capsule IDs** — no
-   match-reason, no relevant-span. `approval.request_approval` already
-   handles this (no "why matched" line, no suggested-span shortcut —
-   see `agent/approval/ARCHITECTURE.md`'s own "Known upstream gap").
-   This task's `process_incoming_ask` just passes candidate IDs through
-   unchanged; nothing new invented here.
+1. ~~`resolver.search_candidates` returns bare capsule IDs~~ — **closed.**
+   `search_candidates` now returns `SearchCandidate` (capsule ID +
+   `match_reason` + optional `relevant_span`) per result; `approval.
+   request_approval` renders the "why matched" line and offers the
+   suggested-span confirm shortcut when a `match_info` map is supplied
+   (see `agent/approval/ARCHITECTURE.md`). `wiring/flows.py` still only
+   needs bare capsule IDs for `ApprovalRequest.candidate_capsule_ids`, so
+   it unwraps `SearchCandidate.capsule_id` there rather than threading
+   `match_info` through to the terminal prompt — wiring `match_info`
+   end-to-end into the live approval flow is future work, not done here.
 2. **`agent/capsules/` doesn't exist** — still a docstring-only stub.
    `wiring/local_state.load_capsules` is a minimal, explicitly-flagged
    stand-in: direct `*.md` file read with a simple `key: value` header

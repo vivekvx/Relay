@@ -5,8 +5,7 @@
 # Inputs (ApprovalRequest, Capsule, ApprovalState) are NOT redefined here —
 # they're imported directly from resolver.types, the real, already-built
 # contract. See ARCHITECTURE.md "Built against real resolver types" for
-# confirmation and the one known upstream data gap (no match-reason/span
-# in resolver.search_candidates's output).
+# confirmation.
 
 from __future__ import annotations
 

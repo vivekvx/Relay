@@ -31,6 +31,19 @@ class SenderIdentity:
 
 
 @dataclass(frozen=True)
+class SearchCandidate:
+    """One result from resolver.search_candidates: a capsule ID plus why it
+    matched. `relevant_span` is a (start, end) offset pair into the
+    capsule's content — populated when the match traces to a specific
+    content region, None when it doesn't (e.g. a tag-only match has no
+    single span to point at). None here is an expected case, not an
+    exceptional one."""
+    capsule_id: str
+    match_reason: str
+    relevant_span: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
 class Capsule:
     id: str
     shareable: bool

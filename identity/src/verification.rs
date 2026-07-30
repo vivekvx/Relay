@@ -16,8 +16,10 @@ use std::fmt;
 
 /// Default acceptable age for a request, in seconds, before it's
 /// rejected as expired. Also used symmetrically for future-dated
-/// requests (clock skew tolerance) — see `verify_payload`.
-pub const DEFAULT_MAX_REQUEST_AGE_SECS: u64 = 300;
+/// requests (clock skew tolerance) — see `verify_payload`. Formalized
+/// as a resolved decision: ±30 seconds, symmetric (PRD.md §5, "Clock
+/// skew tolerance").
+pub const DEFAULT_MAX_REQUEST_AGE_SECS: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationError {

@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Callable
 
+from resolver.types import SearchCandidate
+
 from .render import render_excerpt_view, render_request
 from .types import (
     ApprovalDecision,
@@ -56,6 +58,7 @@ def request_approval(
     input_fn: InputFn = input,
     output_fn: OutputFn = print,
     now: datetime | None = None,
+    match_info: dict[str, SearchCandidate] | None = None,
 ) -> ApprovalDecision:
     now = now or datetime.now(timezone.utc)
 
@@ -68,7 +71,7 @@ def request_approval(
 
     candidates = _resolve_candidates(request, capsules_by_id)
 
-    output_fn(render_request(request, candidates, now=now))
+    output_fn(render_request(request, candidates, now=now, match_info=match_info))
     choice = _read(input_fn, "> ")
     if choice is None:
         return _denied(now)
@@ -77,7 +80,7 @@ def request_approval(
     if choice in ("w", "whole"):
         return _approve_whole(candidates, input_fn, now)
     if choice in ("e", "excerpt"):
-        return _approve_excerpt(candidates, input_fn, output_fn, now)
+        return _approve_excerpt(candidates, input_fn, output_fn, now, match_info=match_info)
     if choice in ("m", "manual"):
         return _manual_answer(input_fn, now)
     if choice in ("d", "deny"):
@@ -108,7 +111,11 @@ def _approve_whole(candidates: list[Capsule], input_fn: InputFn, now: datetime) 
 
 
 def _approve_excerpt(
-    candidates: list[Capsule], input_fn: InputFn, output_fn: OutputFn, now: datetime
+    candidates: list[Capsule],
+    input_fn: InputFn,
+    output_fn: OutputFn,
+    now: datetime,
+    match_info: dict[str, SearchCandidate] | None = None,
 ) -> ApprovalDecision:
     raw = _read(input_fn, "Doc number: ")
     if raw is None or not raw.strip().isdigit():
@@ -120,9 +127,27 @@ def _approve_excerpt(
     capsule = candidates[idx - 1]
     output_fn(render_excerpt_view(capsule))
 
-    # No suggested-span confirm shortcut: resolver never supplies a
-    # relevant_span (see ARCHITECTURE.md), so bounds are always typed
-    # manually — there is nothing to confirm.
+    # Suggested-span confirm shortcut: only offered when resolver actually
+    # supplied a relevant_span for this capsule. Any answer other than a
+    # clear yes/no ("", y, yes / n, no) is ambiguous -> deny, same
+    # default-safe rule as every other prompt here. Declining ("n"/"no")
+    # falls through to manual bound entry below, unchanged.
+    match = match_info.get(capsule.id) if match_info else None
+    if match is not None and match.relevant_span is not None:
+        span_start, span_end = match.relevant_span
+        raw_confirm = _read(input_fn, f"Use suggested span {span_start},{span_end}? [Y/n]: ")
+        if raw_confirm is None:
+            return _denied(now)
+        answer = raw_confirm.strip().lower()
+        if answer in ("", "y", "yes"):
+            content_len = len(capsule.content)
+            if not (0 <= span_start < span_end <= content_len):
+                return _denied(now)
+            bounds = ExcerptBounds(capsule_id=capsule.id, start=span_start, end=span_end)
+            return ApprovalDecision(outcome=Outcome.APPROVED_EXCERPT, excerpt=bounds, decided_at=now)
+        if answer not in ("n", "no"):
+            return _denied(now)
+
     raw_bounds = _read(input_fn, "Enter span as 'start,end': ")
     if raw_bounds is None:
         return _denied(now)

@@ -258,7 +258,14 @@ def process_incoming_ask(
         else:
             # Ad hoc branch (PRD.md §3.2): deterministic candidate
             # search, then a live, blocking terminal approval prompt.
-            candidate_ids = search_candidates(SenderIdentity(sender), query, list(capsules_by_id.values()))
+            # search_candidates now returns SearchCandidate objects (match
+            # reason/span, for approval/'s richer rendering) — flows.py
+            # only ever needed bare capsule IDs for ApprovalRequest, so
+            # unwrap here rather than changing candidate_capsule_ids' type.
+            candidate_ids = tuple(
+                c.capsule_id
+                for c in search_candidates(SenderIdentity(sender), query, list(capsules_by_id.values()))
+            )
             approval_request = ApprovalRequest(
                 sender=sender,
                 query=query,

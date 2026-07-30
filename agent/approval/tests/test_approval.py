@@ -7,7 +7,7 @@ import pytest
 # Deliberately import resolver's real module too, not just what approval/
 # re-exports — proves this is a real integration, not approval/ quietly
 # redefining its own parallel Capsule/ApprovalRequest.
-from resolver.types import ApprovalRequest, ApprovalState, Capsule
+from resolver.types import ApprovalRequest, ApprovalState, Capsule, SearchCandidate
 
 from approval import (
     ApprovalDecision,
@@ -79,12 +79,93 @@ def test_approve_whole_multiple_docs():
 
 
 def test_approve_excerpt_carries_manually_typed_bounds():
-    # No suggested-span shortcut exists (resolver supplies no span) — the
-    # approver always types bounds directly.
+    # No match_info passed -> no suggested-span shortcut offered, so the
+    # approver types bounds directly. Regression check: behavior must stay
+    # identical to before match_info existed.
     input_fn, output_fn = fake_io("e", "1", "4,34")
     decision = request_approval(make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=output_fn, now=NOW)
     assert decision.outcome is Outcome.APPROVED_EXCERPT
     assert decision.excerpt.capsule_id == "cap-a"
+    assert (decision.excerpt.start, decision.excerpt.end) == (4, 34)
+
+
+# --- match_info: "why matched" line + suggested-span shortcut -------------
+
+
+def test_match_reason_line_renders_when_match_info_present():
+    match_info = {"cap-a": SearchCandidate(capsule_id="cap-a", match_reason="keyword match: webhook, retry")}
+    input_fn, output_fn = fake_io("d")
+    lines = []
+    request_approval(
+        make_request(),
+        make_capsules_by_id(),
+        input_fn=input_fn,
+        output_fn=lines.append,
+        now=NOW,
+        match_info=match_info,
+    )
+    rendered = "\n".join(lines)
+    assert "why matched: keyword match: webhook, retry" in rendered
+
+
+def test_no_match_reason_line_when_match_info_absent():
+    input_fn, output_fn = fake_io("d")
+    lines = []
+    request_approval(make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=lines.append, now=NOW)
+    rendered = "\n".join(lines)
+    assert "why matched" not in rendered
+
+
+def test_suggested_span_confirm_shortcut_accepted_with_empty_answer():
+    match_info = {"cap-a": SearchCandidate(capsule_id="cap-a", match_reason="keyword match: webhook", relevant_span=(4, 34))}
+    input_fn, output_fn = fake_io("e", "1", "")  # empty answer to the Y/n prompt means "yes"
+    decision = request_approval(
+        make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=output_fn, now=NOW, match_info=match_info
+    )
+    assert decision.outcome is Outcome.APPROVED_EXCERPT
+    assert decision.excerpt.capsule_id == "cap-a"
+    assert (decision.excerpt.start, decision.excerpt.end) == (4, 34)
+
+
+def test_suggested_span_confirm_shortcut_accepted_with_explicit_yes():
+    match_info = {"cap-a": SearchCandidate(capsule_id="cap-a", match_reason="keyword match: webhook", relevant_span=(4, 34))}
+    input_fn, output_fn = fake_io("e", "1", "y")
+    decision = request_approval(
+        make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=output_fn, now=NOW, match_info=match_info
+    )
+    assert decision.outcome is Outcome.APPROVED_EXCERPT
+    assert (decision.excerpt.start, decision.excerpt.end) == (4, 34)
+
+
+def test_suggested_span_declined_falls_back_to_manual_entry():
+    match_info = {"cap-a": SearchCandidate(capsule_id="cap-a", match_reason="keyword match: webhook", relevant_span=(4, 34))}
+    input_fn, output_fn = fake_io("e", "1", "n", "10,20")
+    decision = request_approval(
+        make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=output_fn, now=NOW, match_info=match_info
+    )
+    assert decision.outcome is Outcome.APPROVED_EXCERPT
+    assert (decision.excerpt.start, decision.excerpt.end) == (10, 20)
+
+
+def test_suggested_span_ambiguous_answer_denies():
+    match_info = {"cap-a": SearchCandidate(capsule_id="cap-a", match_reason="keyword match: webhook", relevant_span=(4, 34))}
+    input_fn, output_fn = fake_io("e", "1", "banana")
+    decision = request_approval(
+        make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=output_fn, now=NOW, match_info=match_info
+    )
+    assert decision.outcome is Outcome.DENIED
+
+
+def test_no_suggested_span_shortcut_when_relevant_span_is_none():
+    # match_info present but with no span (e.g. a tag-only match) -> no
+    # shortcut prompt at all, straight to manual entry — same regression
+    # guarantee as when match_info is omitted entirely.
+    match_info = {"cap-a": SearchCandidate(capsule_id="cap-a", match_reason="tag match: webhook", relevant_span=None)}
+    input_fn, output_fn = fake_io("e", "1", "4,34")
+    decision = request_approval(
+        make_request(), make_capsules_by_id(), input_fn=input_fn, output_fn=output_fn, now=NOW, match_info=match_info
+    )
+    assert decision.outcome is Outcome.APPROVED_EXCERPT
     assert (decision.excerpt.start, decision.excerpt.end) == (4, 34)
 
 
