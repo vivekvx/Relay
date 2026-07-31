@@ -9,21 +9,39 @@ operating instructions before writing any code in this repo.
 ## Quick Start
 
 The whole point of Relay is that a friend gets their own local Relay set
-up in one message, not by manually running a dozen commands. If someone
-sent you this repo, paste this to your own coding agent (Claude Code,
-Codex, Antigravity — any of them; nothing below assumes which one):
+up in one message, not by manually running a dozen commands. Two ways to
+do it — pick whichever you're comfortable with, both are fully supported:
+
+**Option A — one-line install.** Paste this into your own terminal
+(replace `<handle>` with a handle for yourself, e.g. your first name):
+
+```
+curl -fsSL https://raw.githubusercontent.com/vivekvx/Relay/main/install.sh | bash -s <handle>
+```
+
+`install.sh` is a short, readable script — clone it and read it yourself
+first if you'd rather not pipe curl straight into bash (a reasonable
+thing to want): https://github.com/vivekvx/Relay/blob/main/install.sh.
+It does exactly one thing: clone Relay into `~/relay`, then run
+`setup.sh <handle>` from inside it. No other network calls, no
+telemetry, nothing hidden.
+
+**Option B — clone and read first.** If you'd rather review everything
+before running anything, or someone sent you this repo to set up
+yourself, paste this to your own coding agent (Claude Code, Codex,
+Antigravity — any of them; nothing below assumes which one):
 
 > Clone https://github.com/vivekvx/Relay.git, run `./setup.sh <a
 > handle for me, e.g. my first name>` from inside it, and tell me my
 > Relay handle and relay number once it's done.
 
-That's it — one message. `setup.sh` creates a Python venv, installs
-dependencies, builds `identity/`'s Rust bridge, starts your own local
-registry (on dedicated ports 8088/5544 — never the common 8000/5432
-defaults, which collide with other projects' Docker containers on real
-dev machines), registers your identity, and confirms everything with a
-real health check. It's idempotent — safe to re-run if anything fails
-partway.
+Both options land in the same place. `setup.sh` creates a Python venv,
+installs dependencies, builds `identity/`'s Rust bridge, starts your own
+local registry (on dedicated ports 8088/5544 — never the common
+8000/5432 defaults, which collide with other projects' Docker containers
+on real dev machines), registers your identity, and confirms everything
+with a real health check. It's idempotent — safe to re-run if anything
+fails partway.
 
 **Requires** (macOS only for this pass — Linux/Windows setup is a
 known, stated gap, not silently unsupported): Python 3.12+, Rust/cargo,
