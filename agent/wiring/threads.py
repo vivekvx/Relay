@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+
+from .atomic_json_store import atomic_write_json, locked
 
 DEFAULT_THREAD_INACTIVITY_EXPIRY = timedelta(hours=24)
 
@@ -54,25 +55,33 @@ class ThreadRecord:
 
 
 class ThreadStore:
-    """thread_id -> ThreadRecord, one JSON file per local identity. A
-    Lock guards it because `relay ask`'s background poll thread and its
-    own foreground ask() call are both live in the same process and may
-    touch the same file."""
+    """thread_id -> ThreadRecord, one JSON file per local identity.
+
+    Every public method here re-reads the file fresh from disk and
+    writes it back, all under a single `locked()` critical section
+    (atomic_json_store.py) — not just cached in memory and flushed on
+    write. `relay serve`'s long-lived background poll loop and a
+    concurrent manual `relay ask`/`relay pending` invocation are two
+    independent processes that can genuinely touch this same file at
+    the same moment; without re-reading under a lock, the second
+    writer's save would silently clobber the first's change using a
+    stale in-memory copy. The lock also covers ordinary same-process
+    thread-safety (each call opens its own fd/lock, so concurrent
+    threads in one process serialize the same way concurrent processes
+    do) — no separate threading.Lock needed."""
 
     def __init__(self, path: str):
         self._path = path
-        self._lock = threading.Lock()
-        self._records: dict[str, ThreadRecord] = {}
-        self._load()
 
-    def _load(self) -> None:
+    def _load(self) -> dict[str, ThreadRecord]:
         if not os.path.exists(self._path):
-            return
+            return {}
         with open(self._path, encoding="utf-8") as f:
             raw = json.load(f)
+        records: dict[str, ThreadRecord] = {}
         for thread_id, rec in raw.items():
             messages = [ThreadMessage(**m) for m in rec.get("messages", [])]
-            self._records[thread_id] = ThreadRecord(
+            records[thread_id] = ThreadRecord(
                 thread_id=rec["thread_id"],
                 sender=rec["sender"],
                 recipient=rec["recipient"],
@@ -81,24 +90,23 @@ class ThreadStore:
                 approved_capsule_ids=list(rec.get("approved_capsule_ids", [])),
                 messages=messages,
             )
+        return records
 
-    def _save(self) -> None:
-        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
-        raw = {thread_id: asdict(rec) for thread_id, rec in self._records.items()}
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
+    def _save(self, records: dict[str, ThreadRecord]) -> None:
+        atomic_write_json(self._path, {thread_id: asdict(rec) for thread_id, rec in records.items()})
 
     def get(self, thread_id: str) -> ThreadRecord | None:
-        with self._lock:
-            return self._records.get(thread_id)
+        with locked(self._path):
+            return self._load().get(thread_id)
 
     def get_or_create(self, thread_id: str, sender: str, recipient: str, now: datetime) -> ThreadRecord:
         """Never overwrites an existing record — an inactivity-expired
         thread keeps its history and its thread_id; only its
         approved_capsule_ids stop being trusted for auto-continuation
         (see flows.py's effective_approved_ids), not its identity or log."""
-        with self._lock:
-            existing = self._records.get(thread_id)
+        with locked(self._path):
+            records = self._load()
+            existing = records.get(thread_id)
             if existing is not None:
                 return existing
             record = ThreadRecord(
@@ -108,28 +116,30 @@ class ThreadStore:
                 created_at=now.isoformat(),
                 last_activity_at=now.isoformat(),
             )
-            self._records[thread_id] = record
-            self._save()
+            records[thread_id] = record
+            self._save(records)
             return record
 
     def add_approved_capsules(self, thread_id: str, capsule_ids: frozenset[str]) -> None:
         if not capsule_ids:
             return
-        with self._lock:
-            record = self._records[thread_id]
+        with locked(self._path):
+            records = self._load()
+            record = records[thread_id]
             record.approved_capsule_ids = sorted(set(record.approved_capsule_ids) | capsule_ids)
-            self._save()
+            self._save(records)
 
     def record_message(
         self, thread_id: str, question: str, answer: str, outcome: str, now: datetime, nonce: str = ""
     ) -> None:
-        with self._lock:
-            record = self._records[thread_id]
+        with locked(self._path):
+            records = self._load()
+            record = records[thread_id]
             record.messages.append(
                 ThreadMessage(question=question, answer=answer, outcome=outcome, at=now.isoformat(), nonce=nonce)
             )
             record.last_activity_at = now.isoformat()
-            self._save()
+            self._save(records)
 
     def finalize_message(self, thread_id: str, nonce: str, answer: str, outcome: str, now: datetime) -> None:
         """Fills in a placeholder message ask() recorded at send time
@@ -140,8 +150,9 @@ class ThreadStore:
         running `relay check` with no in-memory history of its own
         ask() call) rather than raising — nothing security-relevant
         depends on this bookkeeping succeeding."""
-        with self._lock:
-            record = self._records.get(thread_id)
+        with locked(self._path):
+            records = self._load()
+            record = records.get(thread_id)
             if record is None:
                 return
             record.last_activity_at = now.isoformat()
@@ -149,9 +160,9 @@ class ThreadStore:
                 if message.nonce == nonce:
                     message.answer = answer
                     message.outcome = outcome
-                    self._save()
+                    self._save(records)
                     return
             record.messages.append(
                 ThreadMessage(question="", answer=answer, outcome=outcome, at=now.isoformat(), nonce=nonce)
             )
-            self._save()
+            self._save(records)

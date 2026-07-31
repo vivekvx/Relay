@@ -122,6 +122,21 @@ CREATE TABLE IF NOT EXISTS rate_limit_config (
     limit_per_hour  INT NOT NULL CHECK (limit_per_hour > 0)
 );
 
+-- Per-source-IP rate limiting for the unauthenticated identity-lookup
+-- endpoints (GET /identities/{handle}, GET /identities/by-relay-number/
+-- {relay_number}) — raises the cost of handle/relay-number enumeration,
+-- does not eliminate it (see registry/ARCHITECTURE.md). No signed
+-- payload exists on a GET, so IP is the only caller signal available;
+-- not per-recipient-configurable like rate_limit_config above, since
+-- there's no recipient identity to attribute a lookup attempt to until
+-- AFTER the lookup succeeds.
+CREATE TABLE IF NOT EXISTS identity_lookup_events (
+    id          BIGSERIAL PRIMARY KEY,
+    ip          TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_identity_lookup_events_ip ON identity_lookup_events (ip, occurred_at);
+
 -- Approval expiry default override (approver-configurable, default 5h
 -- applied in application code — PRD.md §6).
 CREATE TABLE IF NOT EXISTS approval_expiry_config (

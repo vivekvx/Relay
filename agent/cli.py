@@ -330,6 +330,15 @@ def _ensure_relay_postgres(database_url: str) -> None:
 
 def cmd_serve_registry(args: argparse.Namespace) -> None:
     registry_url = f"http://localhost:{args.port}"
+    if args.host not in ("127.0.0.1", "localhost"):
+        print(
+            f"WARNING: binding to {args.host} — this registry's HTTP endpoints "
+            f"will be reachable from any other device on your local network, not "
+            f"just this machine. Still rate-limited, still no capsule content "
+            f"exposed (routing/audit metadata only, per this project's hard "
+            f"boundary) — but this is real network exposure beyond the default "
+            f"loopback-only binding."
+        )
     if _registry_reachable(registry_url):
         print(f"registry already running and reachable at {registry_url}")
         return
@@ -352,7 +361,7 @@ def cmd_serve_registry(args: argparse.Namespace) -> None:
 
     with open(REGISTRY_LOG_FILE, "a") as log:
         process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "registry.app:app", "--port", str(args.port)],
+            [sys.executable, "-m", "uvicorn", "registry.app:app", "--port", str(args.port), "--host", args.host],
             cwd=REPO_ROOT,
             env=env,
             stdout=log,
@@ -828,6 +837,13 @@ def main() -> None:
 
     p_serve = sub.add_parser("serve-registry", help="start the local registry, detached, surviving this terminal closing")
     p_serve.add_argument("--port", type=int, default=DEFAULT_REGISTRY_PORT)
+    p_serve.add_argument(
+        "--host",
+        default=os.environ.get("RELAY_REGISTRY_HOST", "127.0.0.1"),
+        help="bind address (default 127.0.0.1, loopback-only; pass 0.0.0.0 or set "
+             "RELAY_REGISTRY_HOST=0.0.0.0 to make the registry reachable from other "
+             "devices on the local network)",
+    )
     p_serve.add_argument("--database-url", dest="database_url", default=None)
     p_serve.set_defaults(func=cmd_serve_registry)
 

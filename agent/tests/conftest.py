@@ -92,7 +92,7 @@ def db_session(engine):
         conn.execute(text(
             "TRUNCATE identities, grants, approval_requests, pending_relay_queue, "
             "nonce_log, rate_limit_events, rate_limit_config, approval_expiry_config, "
-            "audit_log RESTART IDENTITY CASCADE"
+            "identity_lookup_events, audit_log RESTART IDENTITY CASCADE"
         ))
 
 

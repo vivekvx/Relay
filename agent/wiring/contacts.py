@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from dataclasses import asdict, dataclass
 
+from .atomic_json_store import atomic_write_json, locked
 from .registry_client import RegistryClient
 
 
@@ -25,43 +25,44 @@ class Contact:
 
 
 class ContactsStore:
+    """Every public method re-reads fresh from disk and writes back
+    under a single `locked()` critical section (atomic_json_store.py) —
+    see wiring/threads.py's ThreadStore docstring for why this matters
+    across processes, not just within one."""
+
     def __init__(self, path: str):
         self._path = path
-        self._lock = threading.Lock()
-        self._contacts: dict[str, Contact] = {}
-        self._load()
 
-    def _load(self) -> None:
+    def _load(self) -> dict[str, Contact]:
         if not os.path.exists(self._path):
-            return
+            return {}
         with open(self._path, encoding="utf-8") as f:
             raw = json.load(f)
-        self._contacts = {name: Contact(**fields) for name, fields in raw.items()}
+        return {name: Contact(**fields) for name, fields in raw.items()}
 
-    def _save(self) -> None:
-        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
-        raw = {name: asdict(contact) for name, contact in self._contacts.items()}
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
+    def _save(self, contacts: dict[str, Contact]) -> None:
+        atomic_write_json(self._path, {name: asdict(contact) for name, contact in contacts.items()})
 
     def add(self, name: str, relay_number: str) -> None:
-        with self._lock:
-            self._contacts[name] = Contact(name=name, relay_number=relay_number)
-            self._save()
+        with locked(self._path):
+            contacts = self._load()
+            contacts[name] = Contact(name=name, relay_number=relay_number)
+            self._save(contacts)
 
     def get(self, name: str) -> Contact | None:
-        with self._lock:
-            return self._contacts.get(name)
+        with locked(self._path):
+            return self._load().get(name)
 
     def list(self) -> list[Contact]:
-        with self._lock:
-            return sorted(self._contacts.values(), key=lambda c: c.name)
+        with locked(self._path):
+            return sorted(self._load().values(), key=lambda c: c.name)
 
     def remove(self, name: str) -> bool:
-        with self._lock:
-            existed = self._contacts.pop(name, None) is not None
+        with locked(self._path):
+            contacts = self._load()
+            existed = contacts.pop(name, None) is not None
             if existed:
-                self._save()
+                self._save(contacts)
             return existed
 
 

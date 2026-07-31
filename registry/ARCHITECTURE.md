@@ -215,3 +215,26 @@ transitions it to `denied` transactionally before returning it.
    concept. No column, schema change, or endpoint was added. See
    `agent/ARCHITECTURE.md`'s "Conversation threading" section for the
    full design.
+10. **Per-IP rate limiting on the identity-lookup endpoints
+    (`GET /identities/{handle}`, `GET /identities/by-relay-number/
+    {relay_number}`) — a mitigation, explicitly NOT a structural fix.**
+    A security review flagged that both endpoints were fully
+    unauthenticated with no rate limiting at all, letting anyone
+    reachable enumerate registered handles/relay numbers by guessing.
+    `identity_lookup_rate_limit_service.py` adds a per-source-IP fixed
+    counter (default 60/hour, shared across both endpoints so
+    alternating between them doesn't double an attacker's budget) —
+    same fixed-counter pattern as `rate_limit_service.py`, keyed by IP
+    instead of `(sender, recipient)` since a GET carries no signed
+    payload to attribute a caller identity from.
+
+    **State this plainly: this raises the cost of enumeration, it does
+    not eliminate it.** 60/hour per IP still permits slow, patient
+    guessing indefinitely, and says nothing about an attacker with
+    access to multiple source IPs. Full structural closure of this gap
+    is a separate, bigger design question this fix does not attempt:
+    e.g., removing handle-based lookup entirely and requiring
+    relay-number-only resolution (so a handle alone is never enough to
+    confirm someone is registered), or requiring the caller to already
+    know something non-guessable before any lookup succeeds. That
+    question is still open — tracked, not solved here.

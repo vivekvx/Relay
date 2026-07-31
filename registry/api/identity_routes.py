@@ -1,14 +1,32 @@
 # Identity registration endpoint. PRD.md §4.2 "Identity layer".
 # Thin route — validation via Pydantic schema, logic in services/.
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from registry.db import get_session
 from registry.models.schemas import RegisterIdentityRequest
-from registry.services import audit_service, identity_service
+from registry.services import audit_service, identity_lookup_rate_limit_service, identity_service
 
 router = APIRouter(prefix="/identities", tags=["identities"])
+
+
+def _check_lookup_rate_limit(request: Request, session: Session) -> None:
+    """Shared by both GET lookup routes below — per-IP fixed-counter
+    limit (identity_lookup_rate_limit_service.py). Raises 429 before any
+    lookup runs; this only raises the cost of handle/relay-number
+    enumeration, it does not eliminate it structurally (see
+    registry/ARCHITECTURE.md)."""
+    ip = request.client.host if request.client else "unknown"
+    allowed = identity_lookup_rate_limit_service.check_and_record(session, ip, datetime.now(timezone.utc))
+    session.commit()  # persists the just-recorded event on the allowed path; no-op on the rejected path
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"outcome": "rate_limited", "message": "too many identity lookups from this source — try again later"},
+        )
 
 
 @router.post("", status_code=201)
@@ -49,7 +67,8 @@ def register_identity(
 # wildcard that would otherwise swallow "by-relay-number" itself as a
 # literal (nonexistent) handle before this route ever got a chance.
 @router.get("/by-relay-number/{relay_number}")
-def get_identity_by_relay_number(relay_number: str, session: Session = Depends(get_session)):
+def get_identity_by_relay_number(relay_number: str, request: Request, session: Session = Depends(get_session)):
+    _check_lookup_rate_limit(request, session)
     row = identity_service.get_identity_by_relay_number(session, relay_number)
     if row is None:
         raise HTTPException(status_code=404, detail="relay number not registered")
@@ -68,7 +87,8 @@ def get_identity_by_relay_number(relay_number: str, session: Session = Depends(g
 # them — the stored column would be otherwise unreachable data. Kept to
 # the minimum: returns the two public keys, nothing else.
 @router.get("/{handle}")
-def get_identity(handle: str, session: Session = Depends(get_session)):
+def get_identity(handle: str, request: Request, session: Session = Depends(get_session)):
+    _check_lookup_rate_limit(request, session)
     row = identity_service.get_identity(session, handle)
     if row is None:
         raise HTTPException(status_code=404, detail="handle not registered")

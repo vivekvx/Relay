@@ -97,6 +97,20 @@ rate_limit_config = Table(
     Column("limit_per_hour", Integer, nullable=False),
 )
 
+# Per-source-IP rate limiting on the unauthenticated identity-lookup
+# endpoints (GET /identities/{handle}, GET /identities/by-relay-number/
+# {relay_number}) — a different key space from rate_limit_events above
+# (that one is per authenticated (sender, recipient) pair from signed
+# /relay requests; lookups have no signed payload, so IP is the only
+# available caller signal). See identity_lookup_rate_limit_service.py.
+identity_lookup_events = Table(
+    "identity_lookup_events",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("ip", Text, nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+)
+
 approval_expiry_config = Table(
     "approval_expiry_config",
     metadata,

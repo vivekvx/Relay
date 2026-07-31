@@ -11,49 +11,53 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from datetime import datetime, timedelta
 
 from resolver.resolver import DEFAULT_ENUMERATION_WINDOW
 
+from .atomic_json_store import atomic_write_json, locked
+
 
 class DisclosureLog:
-    """sender -> [(capsule_id, at)], one JSON file per local identity."""
+    """sender -> [(capsule_id, at)], one JSON file per local identity.
+
+    Every public method re-reads fresh from disk and writes back under
+    a single `locked()` critical section (atomic_json_store.py) —
+    see wiring/threads.py's ThreadStore docstring for why this matters
+    across processes, not just within one (`relay serve`'s background
+    poll loop vs. a concurrent manual CLI invocation touching the same
+    file)."""
 
     def __init__(self, path: str):
         self._path = path
-        self._lock = threading.Lock()
-        self._entries: dict[str, list[tuple[str, str]]] = {}
-        self._load()
 
-    def _load(self) -> None:
+    def _load(self) -> dict[str, list[tuple[str, str]]]:
         if not os.path.exists(self._path):
-            return
+            return {}
         with open(self._path, encoding="utf-8") as f:
             raw = json.load(f)
-        self._entries = {sender: [(e["capsule_id"], e["at"]) for e in entries] for sender, entries in raw.items()}
+        return {sender: [(e["capsule_id"], e["at"]) for e in entries] for sender, entries in raw.items()}
 
-    def _save(self) -> None:
-        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+    def _save(self, entries_by_sender: dict[str, list[tuple[str, str]]]) -> None:
         raw = {
             sender: [{"capsule_id": cid, "at": at} for cid, at in entries]
-            for sender, entries in self._entries.items()
+            for sender, entries in entries_by_sender.items()
         }
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
+        atomic_write_json(self._path, raw)
 
     def record(self, sender: str, capsule_ids: frozenset[str], now: datetime) -> None:
         if not capsule_ids:
             return
-        with self._lock:
-            entries = self._entries.setdefault(sender, [])
+        with locked(self._path):
+            entries_by_sender = self._load()
+            entries = entries_by_sender.setdefault(sender, [])
             entries.extend((cid, now.isoformat()) for cid in sorted(capsule_ids))
-            self._save()
+            self._save(entries_by_sender)
 
     def distinct_capsules_in_window(
         self, sender: str, now: datetime, window: timedelta = DEFAULT_ENUMERATION_WINDOW
     ) -> frozenset[str]:
-        with self._lock:
-            entries = self._entries.get(sender, [])
+        with locked(self._path):
+            entries = self._load().get(sender, [])
         window_start = now - window
         return frozenset(cid for cid, at in entries if datetime.fromisoformat(at) > window_start)

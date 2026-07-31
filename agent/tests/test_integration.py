@@ -501,9 +501,9 @@ def test_expired_thread_does_not_auto_continue(tmp_path, registry_client):
     # check is orthogonal to, and independent of, this conversation-level
     # expiry). Real, current wall-clock timestamps are used for the
     # second wire round trip below.
-    record = rohan_threads.get(thread_id)
-    record.last_activity_at = (now() - timedelta(hours=25)).isoformat()
-    rohan_threads._save()
+    records = rohan_threads._load()
+    records[thread_id].last_activity_at = (now() - timedelta(hours=25)).isoformat()
+    rohan_threads._save(records)
 
     # Same thread_id, same question — but this thread's accumulated
     # approval is now past its 24h inactivity expiry, so it must NOT be

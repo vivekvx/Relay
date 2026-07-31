@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 
 from resolver.types import ApprovalRequest, ApprovalState
+
+from .atomic_json_store import atomic_write_json, locked
 
 
 @dataclass
@@ -62,43 +63,44 @@ class PendingApproval:
 
 
 class PendingApprovalStore:
+    """Every public method re-reads fresh from disk and writes back
+    under a single `locked()` critical section (atomic_json_store.py) —
+    see wiring/threads.py's ThreadStore docstring for why this matters
+    across processes, not just within one."""
+
     def __init__(self, path: str):
         self._path = path
-        self._lock = threading.Lock()
-        self._items: dict[str, PendingApproval] = {}
-        self._load()
 
-    def _load(self) -> None:
+    def _load(self) -> dict[str, PendingApproval]:
         if not os.path.exists(self._path):
-            return
+            return {}
         with open(self._path, encoding="utf-8") as f:
             raw = json.load(f)
-        self._items = {nonce: PendingApproval(**fields) for nonce, fields in raw.items()}
+        return {nonce: PendingApproval(**fields) for nonce, fields in raw.items()}
 
-    def _save(self) -> None:
-        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
-        raw = {nonce: asdict(item) for nonce, item in self._items.items()}
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
+    def _save(self, items: dict[str, PendingApproval]) -> None:
+        atomic_write_json(self._path, {nonce: asdict(item) for nonce, item in items.items()})
 
     def add(self, pending: PendingApproval) -> None:
-        with self._lock:
-            self._items[pending.nonce] = pending
-            self._save()
+        with locked(self._path):
+            items = self._load()
+            items[pending.nonce] = pending
+            self._save(items)
 
     def list(self) -> list[PendingApproval]:
-        with self._lock:
-            return list(self._items.values())
+        with locked(self._path):
+            return list(self._load().values())
 
     def get(self, nonce: str) -> PendingApproval | None:
-        with self._lock:
-            return self._items.get(nonce)
+        with locked(self._path):
+            return self._load().get(nonce)
 
     def pop(self, nonce: str) -> PendingApproval | None:
-        with self._lock:
-            item = self._items.pop(nonce, None)
+        with locked(self._path):
+            items = self._load()
+            item = items.pop(nonce, None)
             if item is not None:
-                self._save()
+                self._save(items)
             return item
 
     def pop_expired(self, now: datetime) -> list[PendingApproval]:
@@ -107,10 +109,11 @@ class PendingApprovalStore:
         for actually sending the auto-deny response for each one. This
         method only owns store state, never wire I/O (same separation
         every other store in wiring/ keeps)."""
-        with self._lock:
-            expired = [item for item in self._items.values() if item.is_expired(now)]
+        with locked(self._path):
+            items = self._load()
+            expired = [item for item in items.values() if item.is_expired(now)]
             for item in expired:
-                del self._items[item.nonce]
+                del items[item.nonce]
             if expired:
-                self._save()
+                self._save(items)
             return expired
