@@ -11,6 +11,12 @@ from sqlalchemy.orm import sessionmaker
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql+psycopg://localhost/relay_registry"
 )
+# Render's provisioned Postgres connection strings use the bare
+# "postgresql://" scheme, not SQLAlchemy's "postgresql+psycopg://" —
+# normalize so the same DATABASE_URL Render sets works with no manual
+# edit.
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
