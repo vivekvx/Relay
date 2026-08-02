@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql+psycopg://localhost/relay_registry"
-)
+).strip()
 # Render's provisioned Postgres connection strings use the bare
 # "postgresql://" scheme, not SQLAlchemy's "postgresql+psycopg://" —
 # normalize so the same DATABASE_URL Render sets works with no manual
