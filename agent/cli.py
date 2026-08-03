@@ -102,7 +102,7 @@ def _default_config(handle: str) -> dict:
         "handle": handle,
         "capsule_dir": str(base / "capsules"),
         "key_dir": str(base / "keys" / handle),
-        "registry_url": f"http://localhost:{DEFAULT_REGISTRY_PORT}",
+        "registry_url": DEFAULT_REGISTRY_URL,
         "thread_store": str(base / "threads.json"),
         "disclosure_log": str(base / "disclosure_log.json"),
         "pending_approvals": str(base / "pending_approvals.json"),
@@ -138,6 +138,12 @@ LAUNCHD_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL
 # cluster/port, so the two can never collide regardless of which is
 # running.
 DEFAULT_REGISTRY_PORT = 8088
+# The shared, always-on hosted registry — every fresh `relay init` points
+# here by default so nobody has to know an IP, a --host flag, or run
+# their own registry. Running your own instead is still possible via
+# `relay init --registry-url ...` or `relay serve-registry`, but that's
+# an explicit opt-in now, not the default.
+DEFAULT_REGISTRY_URL = "https://relay-registry.onrender.com"
 RELAY_PG_PORT = 5544
 RELAY_PG_DATA_DIR = REGISTRY_HOME / "pgdata"
 RELAY_PG_LOG_FILE = REGISTRY_HOME / "pg.log"

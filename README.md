@@ -36,19 +36,28 @@ Antigravity — any of them; nothing below assumes which one):
 > Relay handle and relay number once it's done.
 
 Both options land in the same place. `setup.sh` creates a Python venv,
-installs dependencies, builds `identity/`'s Rust bridge, starts your own
-local registry (on dedicated ports 8088/5544 — never the common
-8000/5432 defaults, which collide with other projects' Docker containers
-on real dev machines), registers your identity, and confirms everything
-with a real health check. It's idempotent — safe to re-run if anything
-fails partway.
+installs dependencies, builds `identity/`'s Rust bridge, registers your
+identity with the shared hosted registry, and confirms everything with a
+real health check. It's idempotent — safe to re-run if anything fails
+partway.
+
+Your identity, private keys, and capsules stay 100% local to your own
+machine — never uploaded anywhere. Only routing (handle → endpoint) and
+audit metadata (who queried whom, when) live on the shared registry;
+capsule content and query/response text never do (see `PRD.md` §4 for
+the hard boundary). Running your own registry instead of the shared one
+is possible (`relay serve-registry`, or `relay init --registry-url ...`)
+but is an explicit opt-in for advanced/private use, not what a normal
+install does.
 
 **Requires** (macOS only for this pass — Linux/Windows setup is a
-known, stated gap, not silently unsupported): Python 3.12+, Rust/cargo,
-and PostgreSQL binaries. `setup.sh` checks for each and prints the exact
-`brew`/`rustup` command to install whichever is missing, then stops
-with a clear, specific message rather than a raw crash — safe for your
-agent to read the output, fix the one missing thing, and re-run.
+known, stated gap, not silently unsupported): Python 3.12+ and
+Rust/cargo. `setup.sh` checks for each and prints the exact `brew`/
+`rustup` command to install whichever is missing, then stops with a
+clear, specific message rather than a raw crash — safe for your agent
+to read the output, fix the one missing thing, and re-run. (PostgreSQL
+is only needed if you opt into running your own registry instead of the
+shared hosted one — see "Running the registry locally" below.)
 
 Once it's done, give your **relay number** (not your handle — it's an
 opaque routing id, same trust model as a phone number) to a friend out
@@ -138,7 +147,7 @@ env:
   RELAY_HANDLE:        your-handle
   RELAY_KEY_DIR:       /absolute/path/to/keys/dir
   RELAY_CAPSULE_DIR:   /absolute/path/to/capsules/dir
-  RELAY_REGISTRY_URL:  http://localhost:8088
+  RELAY_REGISTRY_URL:  https://relay-registry.onrender.com
 ```
 
 ### Claude Code
@@ -156,7 +165,7 @@ Project-scoped: create `.mcp.json` in the repo root:
         "RELAY_HANDLE": "your-handle",
         "RELAY_KEY_DIR": "/absolute/path/to/keys/dir",
         "RELAY_CAPSULE_DIR": "/absolute/path/to/capsules/dir",
-        "RELAY_REGISTRY_URL": "http://localhost:8088"
+        "RELAY_REGISTRY_URL": "https://relay-registry.onrender.com"
       }
     }
   }
@@ -183,7 +192,7 @@ CLI — one entry registers Relay for both):
         "RELAY_HANDLE": "your-handle",
         "RELAY_KEY_DIR": "/absolute/path/to/keys/dir",
         "RELAY_CAPSULE_DIR": "/absolute/path/to/capsules/dir",
-        "RELAY_REGISTRY_URL": "http://localhost:8088"
+        "RELAY_REGISTRY_URL": "https://relay-registry.onrender.com"
       }
     }
   }

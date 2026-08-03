@@ -27,6 +27,7 @@ cd "$SCRIPT_DIR"
 
 VENV_DIR="$SCRIPT_DIR/.venv"
 RELAY_BIN="$VENV_DIR/bin/relay"
+DEFAULT_REGISTRY_URL="https://relay-registry.onrender.com"
 
 # ---------------------------------------------------------------------
 # Output helpers — every message an agent running this needs to be able
@@ -76,10 +77,10 @@ for candidate in "$(command -v initdb 2>/dev/null | xargs dirname 2>/dev/null ||
     fi
 done
 if [ -z "$PG_BIN_DIR" ]; then
-    fail "no PostgreSQL binaries found (initdb/pg_ctl/createdb) — relay serve-registry needs these to bootstrap its own dedicated local cluster" \
-         "brew install postgresql@16"
+    echo "  note: no local PostgreSQL binaries found — fine for normal use (the shared hosted registry needs none of this locally); only needed if you later opt into running your own registry via 'relay serve-registry'."
+else
+    ok "PostgreSQL binaries at $PG_BIN_DIR (only used if you opt into a local registry)"
 fi
-ok "PostgreSQL binaries at $PG_BIN_DIR"
 
 # ---------------------------------------------------------------------
 # Step 1: venv (idempotent — reuses an existing one untouched)
@@ -121,16 +122,21 @@ step "Building identity/'s Rust bridge (maturin develop)"
 ok "relay_identity built and installed into the venv"
 
 # ---------------------------------------------------------------------
-# Step 4: local registry (relay serve-registry is already idempotent —
-# prints "already running" rather than double-starting; own dedicated
-# port 8088 and Postgres cluster on port 5544, deliberately NOT the
-# common 8000/5432 defaults, which collided with an unrelated project's
-# Docker container during this project's own development)
+# Step 4: confirm the shared hosted registry is reachable. No local
+# registry/Postgres startup here anymore — every install points at one
+# always-on shared registry by default (see agent/cli.py's
+# DEFAULT_REGISTRY_URL). Running your own registry instead is still
+# possible (relay serve-registry, or `relay init --registry-url ...`)
+# but is an explicit opt-in, not what a fresh install does.
 # ---------------------------------------------------------------------
-step "Starting local registry (port 8088, dedicated Postgres on 5544)"
-"$RELAY_BIN" serve-registry || fail "relay serve-registry failed" "check the output above; logs at ~/.relay/registry.log and ~/.relay/pg.log"
-"$RELAY_BIN" registry-status || fail "relay registry-status reports the registry is not reachable after starting it" "check ~/.relay/registry.log"
-ok "registry running and confirmed reachable"
+step "Checking the shared hosted registry is reachable"
+if curl -fsSL -o /dev/null --max-time 60 "$DEFAULT_REGISTRY_URL/openapi.json"; then
+    ok "hosted registry reachable at $DEFAULT_REGISTRY_URL"
+else
+    echo "  note: couldn't reach $DEFAULT_REGISTRY_URL just now — it may be waking from" \
+         "an idle spin-down (free tier, can take ~50s). Continuing; 'relay register'" \
+         "below will retry."
+fi
 
 # ---------------------------------------------------------------------
 # Step 5: handle + registration
