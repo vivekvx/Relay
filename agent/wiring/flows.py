@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,9 @@ from .notifications import notify_new_approval_request
 from .pending_approvals import PendingApproval, PendingApprovalStore
 from .registry_client import RegistryClient, RegistryRejection
 from .threads import ThreadStore
+from .trace import generate_trace_id
+
+logger = logging.getLogger("relay.agent")
 
 DEFAULT_APPROVAL_EXPIRY = timedelta(hours=5)
 MAX_REQUEST_AGE_SECS = 300  # mirrors identity's / registry's default
@@ -79,6 +83,7 @@ def _sign_and_submit(
     request_type: str,
     plaintext: bytes | None,
     now: datetime,
+    trace_id: str | None = None,
 ) -> tuple[str, int, str]:
     """Returns (nonce, timestamp, relay_item_id)."""
     nonce = generate_nonce()
@@ -88,7 +93,7 @@ def _sign_and_submit(
 
     content_ciphertext_hex = None
     if plaintext is not None:
-        recipient_identity = registry.get_identity(recipient)
+        recipient_identity = registry.get_identity(recipient, trace_id=trace_id)
         if recipient_identity is None:
             raise RegistryRejection(404, "unknown_recipient", f"{recipient!r} is not registered")
         content_ciphertext_hex = ri.encrypt(
@@ -96,7 +101,7 @@ def _sign_and_submit(
         ).hex()
 
     item_id = registry.submit_relay(
-        canonical_bytes.hex(), signature_bytes.hex(), content_ciphertext_hex
+        canonical_bytes.hex(), signature_bytes.hex(), content_ciphertext_hex, trace_id=trace_id
     )
     return nonce, timestamp, item_id
 
@@ -198,6 +203,10 @@ def ask(
     # one. Carried only inside the encrypted content — the registry has
     # no field for it and never sees it (threads.py's module docstring).
     thread_id = thread_id or generate_nonce()
+    # trace_id: pure observability metadata (agent/wiring/trace.py), an
+    # unsigned HTTP header — never gates any decision, never part of the
+    # signed payload. Generated fresh per ask() call.
+    trace_id = generate_trace_id()
     # reason/urgency: structured pre-ask context, bundled as distinct
     # fields (never concatenated into `question`) — purely informational
     # for the approver's terminal display; resolve_scope/search_candidates
@@ -205,8 +214,9 @@ def ask(
     # docstring on this same point).
     content = json.dumps({"question": question, "thread_id": thread_id, "reason": reason, "urgency": urgency})
     nonce, _timestamp, item_id = _sign_and_submit(
-        local_identity, registry, recipient, "ask", content.encode("utf-8"), now
+        local_identity, registry, recipient, "ask", content.encode("utf-8"), now, trace_id=trace_id
     )
+    logger.info("ask_submitted trace_id=%s recipient=%s", trace_id, recipient)
 
     thread_store.get_or_create(thread_id, sender=local_identity.handle, recipient=recipient, now=now)
     thread_store.record_message(thread_id, question=question, answer="", outcome="pending", now=now, nonce=nonce)
@@ -218,7 +228,8 @@ def ask(
                 thread_id, nonce, answer=response.get("answer", ""), outcome=response.get("outcome", "answered"),
                 now=now_fn(),
             )
-            return {"status": "answered", "request_id": nonce, "thread_id": thread_id, **response}
+            logger.info("ask_answered trace_id=%s recipient=%s", trace_id, recipient)
+            return {"status": "answered", "request_id": nonce, "thread_id": thread_id, "trace_id": trace_id, **response}
         if attempt < wait_attempts - 1:
             sleep_fn(wait_interval)
 
@@ -241,6 +252,7 @@ def ask(
         "request_id": nonce,
         "nonce": nonce,
         "thread_id": thread_id,
+        "trace_id": trace_id,
         "relay_item_id": item_id,
         "message": (
             f"not answered yet — check back with `relay check {nonce}`\n"
@@ -818,6 +830,7 @@ def grant(
     expires_at: datetime | None = None,
     *,
     now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    trace_id: str | None = None,
 ) -> str:
     now = now_fn()
     timestamp = int(now.timestamp())
@@ -829,7 +842,7 @@ def grant(
     )
     signature_hex = ri.sign_bytes(local_identity.private_key, canonical_bytes).hex()
 
-    return registry.create_grant(
+    grant_id = registry.create_grant(
         grantor=local_identity.handle,
         grantee=grantee,
         grant_type=grant_type,
@@ -838,7 +851,10 @@ def grant(
         nonce=nonce,
         signature_hex=signature_hex,
         expires_at=expires_at,
+        trace_id=trace_id,
     )
+    logger.info("grant_created trace_id=%s grantee=%s grant_id=%s", trace_id, grantee, grant_id)
+    return grant_id
 
 
 def revoke(
@@ -847,6 +863,7 @@ def revoke(
     grant_id: str,
     *,
     now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    trace_id: str | None = None,
 ) -> None:
     now = now_fn()
     timestamp = int(now.timestamp())
@@ -855,4 +872,5 @@ def revoke(
     canonical_bytes = encode_grant_revoke_payload(grant_id, timestamp, nonce)
     signature_hex = ri.sign_bytes(local_identity.private_key, canonical_bytes).hex()
 
-    registry.revoke_grant(grant_id, timestamp, nonce, signature_hex)
+    registry.revoke_grant(grant_id, timestamp, nonce, signature_hex, trace_id=trace_id)
+    logger.info("grant_revoked trace_id=%s grant_id=%s", trace_id, grant_id)

@@ -17,6 +17,7 @@
 # encoding, or splitting across otherwise-valid-length fields — that is
 # a real, disclosed limit, not a claim of full content detection.
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -28,6 +29,8 @@ from registry.models.tables import identities, nonce_log, pending_relay_queue
 from registry.services import audit_service, identity_service, rate_limit_service
 from registry.services.canonical_payload import PayloadDecodeError, decode_canonical_payload
 from registry.services.signature_verifier import verify_signature
+
+logger = logging.getLogger("registry.relay")
 
 MAX_FIELD_LEN = 128
 MAX_REQUEST_AGE_SECS = 300  # mirrors identity/src/verification.rs's default
@@ -49,11 +52,19 @@ def submit_relay_request(
     signature_hex: str,
     now: datetime,
     content_ciphertext_hex: str | None = None,
+    trace_id: str = "-",
 ) -> str:
     """Verifies and enqueues a signed request. Returns the queued item's
     id on success. Raises RelayRejection (with .outcome set to the
     specific reason) on any rejection — the caller maps this to a
-    distinct HTTP error, not a generic 500."""
+    distinct HTTP error, not a generic 500.
+
+    trace_id is client-supplied observability metadata only (an unsigned
+    HTTP header, agent/wiring/trace.py) — never verified, never gates
+    this function's outcome, logged alongside handles/outcomes only,
+    never query/answer content (CLAUDE.md §2)."""
+
+    logger.info("relay_request_received", extra={"kv": {"trace_id": trace_id}})
 
     try:
         payload_bytes = bytes.fromhex(payload_hex)
@@ -69,6 +80,7 @@ def submit_relay_request(
             detail="payload/signature/ciphertext not valid hex",
         )
         session.commit()
+        logger.info("relay_request_rejected", extra={"kv": {"trace_id": trace_id, "outcome": "malformed_payload"}})
         raise RelayRejection("malformed_payload", "payload, signature, or ciphertext is not valid hex")
 
     if content_ciphertext is not None and len(content_ciphertext) > MAX_CIPHERTEXT_BYTES:
@@ -79,6 +91,9 @@ def submit_relay_request(
             detail=f"content_ciphertext_bytes={len(content_ciphertext)} exceeds {MAX_CIPHERTEXT_BYTES}",
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected", extra={"kv": {"trace_id": trace_id, "outcome": "ciphertext_too_large"}}
+        )
         raise RelayRejection(
             "ciphertext_too_large", f"content ciphertext exceeds {MAX_CIPHERTEXT_BYTES} bytes"
         )
@@ -90,6 +105,7 @@ def submit_relay_request(
             session, "relay_attempt", "malformed_payload", detail=str(exc)
         )
         session.commit()
+        logger.info("relay_request_rejected", extra={"kv": {"trace_id": trace_id, "outcome": "malformed_payload"}})
         raise RelayRejection("malformed_payload", str(exc))
 
     oversized = [
@@ -112,6 +128,10 @@ def submit_relay_request(
             detail=detail,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected",
+            extra={"kv": {"trace_id": trace_id, "outcome": "suspicious_payload_content"}},
+        )
         raise RelayRejection("suspicious_payload_content", detail)
 
     sender_public_key_hex = identity_service.get_public_key_hex(session, decoded.sender)
@@ -124,6 +144,10 @@ def submit_relay_request(
             recipient=decoded.recipient,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected",
+            extra={"kv": {"trace_id": trace_id, "outcome": "unknown_sender", "sender": decoded.sender}},
+        )
         raise RelayRejection("unknown_sender", f"sender {decoded.sender!r} is not registered")
 
     if not verify_signature(sender_public_key_hex, payload_bytes, signature_bytes):
@@ -135,6 +159,10 @@ def submit_relay_request(
             recipient=decoded.recipient,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected",
+            extra={"kv": {"trace_id": trace_id, "outcome": "invalid_signature", "sender": decoded.sender}},
+        )
         raise RelayRejection("invalid_signature", "signature verification failed")
 
     if not identity_service.identity_exists(session, decoded.recipient):
@@ -146,6 +174,10 @@ def submit_relay_request(
             recipient=decoded.recipient,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected",
+            extra={"kv": {"trace_id": trace_id, "outcome": "unknown_recipient", "recipient": decoded.recipient}},
+        )
         raise RelayRejection(
             "unknown_recipient", f"recipient {decoded.recipient!r} is not registered"
         )
@@ -161,6 +193,9 @@ def submit_relay_request(
             recipient=decoded.recipient,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected", extra={"kv": {"trace_id": trace_id, "outcome": "expired_timestamp"}}
+        )
         raise RelayRejection("expired_timestamp", "timestamp outside the validity window")
 
     # Nonce uniqueness enforced by the (sender, nonce) primary key
@@ -184,6 +219,9 @@ def submit_relay_request(
             recipient=decoded.recipient,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected", extra={"kv": {"trace_id": trace_id, "outcome": "replayed_nonce"}}
+        )
         raise RelayRejection("replayed_nonce", "this (sender, nonce) pair has already been seen")
 
     if not rate_limit_service.check_and_record(session, decoded.sender, decoded.recipient, now):
@@ -195,6 +233,9 @@ def submit_relay_request(
             recipient=decoded.recipient,
         )
         session.commit()
+        logger.info(
+            "relay_request_rejected", extra={"kv": {"trace_id": trace_id, "outcome": "rate_limited"}}
+        )
         raise RelayRejection("rate_limited", "sender has exceeded the recipient's per-hour limit")
 
     item_id = str(uuid.uuid4())
@@ -229,12 +270,28 @@ def submit_relay_request(
         detail=success_detail,
     )
     session.commit()
+    logger.info(
+        "relay_request_relayed",
+        extra={
+            "kv": {
+                "trace_id": trace_id,
+                "sender": decoded.sender,
+                "recipient": decoded.recipient,
+                "item_id": item_id,
+            }
+        },
+    )
     return item_id
 
 
-def fetch_pending(session: Session, recipient: str) -> list[dict]:
+def fetch_pending(session: Session, recipient: str, trace_id: str = "-") -> list[dict]:
     """Recipient polls for requests addressed to it. Marks fetched items
-    delivered so a second poll doesn't redeliver the same item."""
+    delivered so a second poll doesn't redeliver the same item.
+
+    trace_id here is the polling call's own observability metadata, not
+    threaded from the original sender (that trace_id never reaches this
+    process — see agent/ARCHITECTURE.md's trace_id/nonce correlation
+    note)."""
     rows = (
         session.execute(
             select(pending_relay_queue).where(
@@ -253,6 +310,9 @@ def fetch_pending(session: Session, recipient: str) -> list[dict]:
             .values(delivered_at=datetime.now(timezone.utc))
         )
         session.commit()
+        logger.info(
+            "relay_items_delivered", extra={"kv": {"trace_id": trace_id, "recipient": recipient, "count": len(rows)}}
+        )
     result = []
     for row in rows:
         item = dict(row)

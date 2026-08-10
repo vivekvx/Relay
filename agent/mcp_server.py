@@ -15,17 +15,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
+import httpx
 from mcp import types
 from mcp.server.lowlevel import Server
 
 from resolver.rate_limiter import RateLimiter
 
 from wiring.contacts import ContactsStore, resolve_recipient
+from wiring.diagnostics import run_diagnostics
 from wiring.disclosure_log import DisclosureLog
+from wiring.error_messages import translate_error
 from wiring.flows import (
     PendingResponseRegistry,
     ask,
@@ -37,9 +42,14 @@ from wiring.flows import (
     run_poll_loop,
 )
 from wiring.local_state import LocalIdentity, load_capsules
+from wiring.paths import REGISTRY_HOME, SERVE_META_FILE, SERVE_PID_FILE
 from wiring.pending_approvals import PendingApproval, PendingApprovalStore
 from wiring.registry_client import RegistryClient, RegistryRejection
+from wiring.setup import ensure_listener_running, ensure_setup
 from wiring.threads import ThreadStore
+from wiring.trace import generate_trace_id
+
+logger = logging.getLogger("relay.agent")
 
 from approval import ApprovalDecision, ExcerptBounds, Outcome
 
@@ -53,6 +63,7 @@ DISCLOSURE_LOG_PATH = os.environ.get("RELAY_DISCLOSURE_LOG", os.path.expanduser(
 PENDING_APPROVALS_PATH = os.environ.get(
     "RELAY_PENDING_APPROVALS", os.path.expanduser("~/.relay/pending_approvals.json")
 )
+CONFIG_PATH = Path(os.environ.get("RELAY_CONFIG", str(Path.home() / ".relay" / "config.toml")))
 CONTACTS_PATH = os.environ.get("RELAY_CONTACTS", os.path.expanduser("~/.relay/contacts.json"))
 
 local_identity: LocalIdentity | None = None
@@ -166,6 +177,34 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             },
         ),
         types.Tool(
+            name="relay_setup",
+            description=(
+                "Set up Relay end-to-end: writes local config, registers this identity with the registry, "
+                "and starts the background listener so incoming asks are reachable even when this chat isn't "
+                "open. Safe to call repeatedly — if already set up, reports current status without re-creating "
+                "or corrupting anything."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "handle": {"type": "string"},
+                    "capsule_dir": {"type": "string"},
+                    "registry_url": {"type": "string"},
+                    "key_dir": {"type": "string"},
+                    "force": {"type": "boolean", "description": "proceed even if already registered with a different key"},
+                },
+                "required": ["handle"],
+            },
+        ),
+        types.Tool(
+            name="relay_status",
+            description=(
+                "Run diagnostic checks: registry reachable, identity registered, local key matches registered, "
+                "listener running, MCP config paths correct. Each check reports pass/fail with a specific fix."
+            ),
+            input_schema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
             name="relay_pending_requests",
             description=(
                 "List ad hoc approval requests waiting for YOU to decide, as the approver — the same queue "
@@ -269,14 +308,17 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
     result wrapping below so it's directly testable without any MCP
     types/transport involved."""
     identity, client = _ensure_initialized()
+    trace_id = generate_trace_id()
+    logger.info("mcp_tool_call trace_id=%s tool=%s", trace_id, name)
     try:
         if name == "relay_ask":
             recipient = resolve_recipient(contacts_store, client, arguments["recipient"])
-            return ask(
+            result = ask(
                 identity, client, recipient, arguments["question"], response_registry, thread_store,
                 thread_id=arguments.get("thread_id"),
                 reason=arguments.get("reason", ""), urgency=arguments.get("urgency", ""),
             )
+            return {**result, "trace_id": result.get("trace_id", trace_id)}
         if name == "relay_grant":
             expires_at = None
             if arguments.get("expires_at"):
@@ -289,18 +331,54 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
                 arguments["grant_type"],
                 arguments["scope_capsule_ids"],
                 expires_at=expires_at,
+                trace_id=trace_id,
             )
-            return {"id": grant_id}
+            return {"id": grant_id, "trace_id": trace_id}
         if name == "relay_revoke":
-            revoke(identity, client, arguments["grant_id"])
-            return {"revoked": True}
+            revoke(identity, client, arguments["grant_id"], trace_id=trace_id)
+            return {"revoked": True, "trace_id": trace_id}
         if name == "relay_check":
-            return check_pending(
+            result = check_pending(
                 identity, client, CAPSULE_DIR, rate_limiter, response_registry, thread_store, disclosure_log,
                 arguments["request_id"],
             )
+            return {**result, "trace_id": trace_id}
+        if name == "relay_setup":
+            setup_handle = arguments.get("handle") or HANDLE
+            setup_result = ensure_setup(
+                setup_handle,
+                arguments.get("capsule_dir") or CAPSULE_DIR,
+                arguments.get("registry_url") or REGISTRY_URL,
+                arguments.get("key_dir") or KEY_DIR,
+                CONFIG_PATH,
+                force=arguments.get("force", False),
+            )
+            listener_result = ensure_listener_running(
+                REGISTRY_HOME, SERVE_PID_FILE, SERVE_META_FILE, REGISTRY_HOME / "serve.log", Path(__file__).resolve().parent
+            )
+            return {
+                "already_configured": setup_result.already_configured,
+                "already_registered": setup_result.already_registered,
+                "relay_number": setup_result.relay_number,
+                "warnings": setup_result.warnings,
+                "listener": listener_result,
+                "trace_id": trace_id,
+            }
+        if name == "relay_status":
+            config = {"registry_url": REGISTRY_URL, "handle": HANDLE, "key_dir": KEY_DIR}
+            mcp_config_path = Path(os.environ.get("RELAY_MCP_CONFIG_PATH", "")) if os.environ.get("RELAY_MCP_CONFIG_PATH") else None
+            results = run_diagnostics(config, SERVE_PID_FILE, mcp_config_path=mcp_config_path)
+            return {
+                "checks": [
+                    {"name": r.name, "passed": r.passed, "detail": r.detail, "fix": r.fix} for r in results
+                ],
+                "trace_id": trace_id,
+            }
         if name == "relay_pending_requests":
-            return {"pending": list_pending_approvals_with_candidates(CAPSULE_DIR, pending_approval_store)}
+            return {
+                "pending": list_pending_approvals_with_candidates(CAPSULE_DIR, pending_approval_store),
+                "trace_id": trace_id,
+            }
         if name == "relay_respond_to_request":
             request_id = arguments["request_id"]
             pending = pending_approval_store.get(request_id)
@@ -308,23 +386,37 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
                 return {
                     "error": "not_found",
                     "message": f"no pending request {request_id!r} — it may have already been answered or expired",
+                    "fix": translate_error("not_found"),
+                    "trace_id": trace_id,
                 }
             capsules_by_id = load_capsules(CAPSULE_DIR)
             try:
                 decision = _build_decision_from_response_args(pending, arguments, capsules_by_id)
             except ValueError as e:
-                return {"error": "ambiguous_decision", "message": str(e)}
+                return {"error": "ambiguous_decision", "message": str(e), "trace_id": trace_id}
             response = resolve_pending_approval(
                 identity, client, CAPSULE_DIR, thread_store, disclosure_log, pending,
                 decision=decision, input_fn=lambda _: "n", output_fn=lambda _: None,
             )
             pending_approval_store.pop(request_id)
-            return response
+            return {**response, "trace_id": trace_id}
         raise ValueError(f"unknown tool {name!r}")
     except RegistryRejection as rejection:
-        return {"error": rejection.outcome, "message": rejection.message}
+        return {
+            "error": rejection.outcome,
+            "message": rejection.message,
+            "fix": translate_error(rejection.outcome, rejection.message),
+            "trace_id": trace_id,
+        }
+    except httpx.HTTPError as exc:
+        return {
+            "error": "registry_unreachable",
+            "message": str(exc),
+            "fix": translate_error("registry_unreachable"),
+            "trace_id": trace_id,
+        }
     except ValueError as e:
-        return {"error": "invalid_request", "message": str(e)}
+        return {"error": "invalid_request", "message": str(e), "trace_id": trace_id}
 
 
 async def _on_call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
@@ -351,7 +443,12 @@ async def _amain() -> None:
 
 def main() -> None:
     import asyncio
+    import sys
 
+    # stderr, not stdout — stdout is the MCP JSON-RPC transport
+    # (mcp.server.stdio.stdio_server below); writing logs there would
+    # corrupt the protocol stream.
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="event=%(message)s logger=%(name)s")
     asyncio.run(_amain())
 
 

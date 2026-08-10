@@ -4,7 +4,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from registry.db import get_session
@@ -12,6 +12,14 @@ from registry.models.schemas import PendingRelayItem, RelaySubmitRequest
 from registry.services import relay_service
 
 router = APIRouter(prefix="/relay", tags=["relay"])
+
+
+def _trace_id(request: Request) -> str:
+    """X-Relay-Trace-Id is client-supplied observability metadata only
+    (agent/wiring/trace.py) — never verified, never used for any
+    authorization decision. HTTP headers are case-insensitive; Starlette
+    normalizes the lookup."""
+    return request.headers.get("x-relay-trace-id", "-")
 
 _OUTCOME_STATUS = {
     "malformed_payload": 400,
@@ -28,7 +36,7 @@ _OUTCOME_STATUS = {
 
 @router.post("", status_code=202)
 def submit_relay_request(
-    body: RelaySubmitRequest, session: Session = Depends(get_session)
+    body: RelaySubmitRequest, request: Request, session: Session = Depends(get_session)
 ):
     now = datetime.now(timezone.utc)
     try:
@@ -38,6 +46,7 @@ def submit_relay_request(
             body.signature_hex,
             now,
             content_ciphertext_hex=body.content_ciphertext_hex,
+            trace_id=_trace_id(request),
         )
     except relay_service.RelayRejection as rejection:
         status_code = _OUTCOME_STATUS.get(rejection.outcome, 400)
@@ -49,5 +58,5 @@ def submit_relay_request(
 
 
 @router.get("/pending/{recipient}", response_model=list[PendingRelayItem])
-def get_pending_requests(recipient: str, session: Session = Depends(get_session)):
-    return relay_service.fetch_pending(session, recipient)
+def get_pending_requests(recipient: str, request: Request, session: Session = Depends(get_session)):
+    return relay_service.fetch_pending(session, recipient, trace_id=_trace_id(request))

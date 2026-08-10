@@ -47,6 +47,7 @@ from wiring.local_state import LocalIdentity
 from wiring.pending_approvals import PendingApprovalStore
 from wiring.registry_client import RegistryClient, RegistryRejection
 from wiring.threads import ThreadStore
+from wiring.trace import generate_trace_id
 
 CONFIG_PATH = Path(os.environ.get("RELAY_CONFIG", str(Path.home() / ".relay" / "config.toml")))
 
@@ -110,7 +111,8 @@ def _default_config(handle: str) -> dict:
     }
 
 
-REGISTRY_HOME = Path.home() / ".relay"
+from wiring.paths import REGISTRY_HOME, SERVE_META_FILE, SERVE_PID_FILE  # noqa: E402
+
 REGISTRY_PID_FILE = REGISTRY_HOME / "registry.pid"
 REGISTRY_LOG_FILE = REGISTRY_HOME / "registry.log"
 REPO_ROOT = Path(__file__).resolve().parent.parent  # agent/cli.py -> repo root (contains registry/)
@@ -120,8 +122,6 @@ AGENT_DIR = Path(__file__).resolve().parent  # cwd for the detached `relay serve
 # (start_new_session=True; PPID becomes 1; survives the launching
 # terminal closing), reused rather than reinvented (this task's
 # explicit instruction).
-SERVE_PID_FILE = REGISTRY_HOME / "serve.pid"
-SERVE_META_FILE = REGISTRY_HOME / "serve.json"  # {"pid": ..., "started_at": isoformat}
 SERVE_LOG_FILE = REGISTRY_HOME / "serve.log"
 
 # macOS-only (this task's explicit scoping decision — no Windows/Linux
@@ -164,66 +164,23 @@ def _pg_bin(name: str) -> str:
     return name  # let it fail with a clear "command not found" if truly absent
 
 
-def _registry_reachable(registry_url: str) -> bool:
-    """Not just "something answers" — MandateCheck's unrelated FastAPI
-    backend also 404s a made-up route, which is exactly what fooled every
-    earlier health check this session. Confirm it's actually Relay via
-    the OpenAPI title FastAPI(title="Relay Registry") sets in
-    registry/app.py."""
-    try:
-        response = httpx.get(f"{registry_url.rstrip('/')}/openapi.json", timeout=2.0)
-        return response.status_code == 200 and response.json().get("info", {}).get("title") == "Relay Registry"
-    except httpx.HTTPError:
-        return False
-
-
-def _pid_alive_from_file(pid_file: Path) -> int | None:
-    """PID from a pidfile, but only if that process is actually alive —
-    a stale pidfile from a killed/crashed process must not be reported as
-    running. Generalized from the registry's own pidfile check so
-    `relay serve` (a second, separate detached process) can reuse it
-    rather than duplicating this logic."""
-    if not pid_file.exists():
-        return None
-    try:
-        pid = int(pid_file.read_text().strip())
-    except ValueError:
-        return None
-    try:
-        os.kill(pid, 0)  # signal 0: existence check only, doesn't actually signal
-    except ProcessLookupError:
-        return None
-    except PermissionError:
-        return pid  # exists, just owned by someone else — still "running"
-    return pid
+# Moved to wiring/diagnostics.py so `relay doctor` (below) and the
+# `relay_status` MCP tool share one implementation instead of two. These
+# names are kept as thin aliases so every existing call site in this file
+# is unchanged.
+from wiring.diagnostics import (  # noqa: E402
+    UNREACHABLE,
+    pid_alive_from_file as _pid_alive_from_file,
+    registered_pubkey as _registered_pubkey,
+    registry_reachable as _registry_reachable,
+    run_diagnostics,
+)
+from wiring.setup import ensure_listener_running  # noqa: E402
+from wiring.atomic_json_store import atomic_write_json, locked  # noqa: E402
 
 
 def _running_pid() -> int | None:
     return _pid_alive_from_file(REGISTRY_PID_FILE)
-
-
-UNREACHABLE = "unreachable"
-
-
-def _registered_pubkey(registry_url: str, handle: str) -> str | None | object:
-    """Same check `relay register` relies on (RegistryClient.get_identity
-    -> None on 404) — reused here, not duplicated, just called before the
-    POST instead of after.
-
-    Returns the registered pubkey hex, None if the handle isn't
-    registered, or the UNREACHABLE sentinel if the registry can't be
-    reached at all. The sentinel matters because `relay init` is the
-    first command anyone runs — often before a registry exists — so a
-    down registry must not turn config writing into a hard failure. It
-    only means "cannot verify", which is different from "verified as
-    mismatched" and must not be conflated with either.
-    """
-    try:
-        registry = RegistryClient.create(registry_url)
-        identity_row = registry.get_identity(handle)
-    except httpx.HTTPError:
-        return UNREACHABLE
-    return identity_row["public_key_hex"] if identity_row else None
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -359,7 +316,10 @@ def cmd_serve_registry(args: argparse.Namespace) -> None:
         return
 
     REGISTRY_HOME.mkdir(parents=True, exist_ok=True)
-    database_url = args.database_url or DEFAULT_DATABASE_URL
+    # .strip(): a copy-pasted DATABASE_URL with a trailing newline is a
+    # real failure mode hit this session — silently breaks the connection
+    # string in a way that's confusing to debug from the resulting error.
+    database_url = (args.database_url or DEFAULT_DATABASE_URL).strip()
     _ensure_relay_postgres(database_url)
 
     env = dict(os.environ)
@@ -433,6 +393,80 @@ def cmd_whoami(args: argparse.Namespace) -> None:
         own_identity = registry.get_identity(config["handle"])
         if own_identity is not None:
             print(f"relay_number: {own_identity['relay_number']}")
+
+
+def _mcp_server_entry(config: dict) -> dict:
+    return {
+        "command": sys.executable,
+        "args": [str(AGENT_DIR / "mcp_server.py")],
+        "cwd": str(AGENT_DIR),
+        "env": {
+            "PYTHONPATH": str(AGENT_DIR),
+            "RELAY_HANDLE": config["handle"],
+            "RELAY_KEY_DIR": config["key_dir"],
+            "RELAY_CAPSULE_DIR": config["capsule_dir"],
+            "RELAY_REGISTRY_URL": config["registry_url"],
+        },
+    }
+
+
+def _write_mcp_entry(mcp_config_path: Path, entry: dict) -> None:
+    """Assignment, not append — mcpServers["relay"] is overwritten with
+    the current entry every call, which is what makes re-running this
+    idempotent: same key updated in place, never a duplicate second
+    entry. Uses atomic_json_store.py's existing primitives, not new file
+    I/O (this task's explicit instruction)."""
+    with locked(str(mcp_config_path)):
+        if mcp_config_path.exists():
+            existing = json.loads(mcp_config_path.read_text())
+        else:
+            existing = {"mcpServers": {}}
+        existing.setdefault("mcpServers", {})["relay"] = entry
+        atomic_write_json(str(mcp_config_path), existing)
+
+
+def _detect_antigravity_config() -> Path | None:
+    """BEST-EFFORT / UNVERIFIED: assumes Antigravity's MCP config uses the
+    same {"mcpServers": {...}} shape as Claude Code's .mcp.json — this has
+    not been confirmed against a real Antigravity install. Only checks
+    fixed, plausible candidate paths and returns None if none exist —
+    never guesses a path into existence or creates a new directory
+    structure speculatively. Do not treat a successful write here as
+    proof it works; verify against a real Antigravity setup before
+    relying on this path."""
+    candidates = [
+        Path.home() / ".antigravity" / "mcp_config.json",
+        Path.home() / ".config" / "antigravity" / "mcp_config.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def cmd_mcp_register(args: argparse.Namespace) -> None:
+    config = _load_config()
+    mcp_config_path = Path(args.mcp_config_path) if args.mcp_config_path else (REPO_ROOT / ".mcp.json")
+    entry = _mcp_server_entry(config)
+
+    _write_mcp_entry(mcp_config_path, entry)
+    print(f"wrote relay entry to {mcp_config_path}")
+
+    antigravity_path = _detect_antigravity_config()
+    if antigravity_path:
+        _write_mcp_entry(antigravity_path, entry)
+        print(f"also wrote {antigravity_path} for Antigravity — UNVERIFIED, confirm this works on a real Antigravity install before relying on it")
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    config = _load_config()
+    results = run_diagnostics(config, SERVE_PID_FILE, mcp_config_path=REPO_ROOT / ".mcp.json")
+    for r in results:
+        status = "PASS" if r.passed else "FAIL"
+        print(f"[{status}] {r.name}: {r.detail}")
+        if not r.passed and r.fix:
+            print(f"       fix: {r.fix}")
+    sys.exit(0 if all(r.passed for r in results) else 1)
 
 
 def cmd_register(args: argparse.Namespace) -> None:
@@ -556,6 +590,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
         wait_attempts=args.wait_attempts, wait_interval=args.wait_interval,
     )
     print(_format_result(result, recipient=recipient))
+    print(f"trace_id: {result.get('trace_id', '(none)')}")
 
 
 def cmd_check(args: argparse.Namespace) -> None:
@@ -660,28 +695,17 @@ def cmd_serve(args: argparse.Namespace) -> None:
         print(f"relay serve already running, pid {pid} — run `relay serve-status` for details")
         return
 
-    REGISTRY_HOME.mkdir(parents=True, exist_ok=True)
-    with open(SERVE_LOG_FILE, "a") as log:
-        process = subprocess.Popen(
-            [sys.executable, "-m", "cli", "listen", "--headless", "--interval", str(args.interval)],
-            cwd=AGENT_DIR,
-            env=dict(os.environ),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,  # same detachment as serve-registry above: PPID becomes 1,
-            # survives this terminal closing — reused exactly, not reinvented.
-        )
-    SERVE_PID_FILE.write_text(str(process.pid))
-    SERVE_META_FILE.write_text(json.dumps({"pid": process.pid, "started_at": datetime.now(timezone.utc).isoformat()}))
-
-    time.sleep(0.5)  # give it a moment, then confirm — don't just claim success
-    if _pid_alive_from_file(SERVE_PID_FILE) is not None:
-        print(f"started relay serve, pid {process.pid}")
+    result = ensure_listener_running(
+        REGISTRY_HOME, SERVE_PID_FILE, SERVE_META_FILE, SERVE_LOG_FILE, AGENT_DIR, interval=args.interval
+    )
+    if result["status"] == "started":
+        print(f"started relay serve, pid {result['pid']}")
         print(f"logs: {SERVE_LOG_FILE}")
         print("ad hoc approval requests will show a native notification — run `relay pending` to answer them")
+    elif result["status"] == "already_running":
+        print(f"relay serve already running, pid {result['pid']}")
     else:
-        print(f"started process (pid {process.pid}) but it exited immediately — check {SERVE_LOG_FILE}")
+        print(f"started process (pid {result['pid']}) but it exited immediately — check {SERVE_LOG_FILE}")
 
 
 def cmd_serve_status(args: argparse.Namespace) -> None:
@@ -803,8 +827,9 @@ def cmd_grant(args: argparse.Namespace) -> None:
     identity, registry = _connect(config)
     capsule_ids = [s.strip() for s in args.scope.split(",") if s.strip()]
     grantee = resolve_recipient(_contacts_store(config), registry, args.grantee)
-    grant_id = grant(identity, registry, grantee, "standing", capsule_ids)
-    print(f"created grant {grant_id} ({grantee} <- {capsule_ids})")
+    trace_id = generate_trace_id()
+    grant_id = grant(identity, registry, grantee, "standing", capsule_ids, trace_id=trace_id)
+    print(f"created grant {grant_id} ({grantee} <- {capsule_ids})  [trace_id={trace_id}]")
 
 
 def cmd_grants(args: argparse.Namespace) -> None:
@@ -821,11 +846,16 @@ def cmd_grants(args: argparse.Namespace) -> None:
 def cmd_revoke(args: argparse.Namespace) -> None:
     config = _load_config()
     identity, registry = _connect(config)
-    revoke(identity, registry, args.grant_id)
-    print(f"revoked {args.grant_id}")
+    trace_id = generate_trace_id()
+    revoke(identity, registry, args.grant_id, trace_id=trace_id)
+    print(f"revoked {args.grant_id}  [trace_id={trace_id}]")
 
 
 def main() -> None:
+    import logging
+
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="event=%(message)s logger=%(name)s")
+
     parser = argparse.ArgumentParser(prog="relay")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -840,6 +870,13 @@ def main() -> None:
 
     p_whoami = sub.add_parser("whoami", help="show current config and whether the local key matches what's registered")
     p_whoami.set_defaults(func=cmd_whoami)
+
+    p_doctor = sub.add_parser("doctor", help="run diagnostic checks (registry reachable, key matches, listener running, MCP config)")
+    p_doctor.set_defaults(func=cmd_doctor)
+
+    p_mcp_register = sub.add_parser("mcp-register", help="write/repair this machine's MCP client config (.mcp.json) so `relay` runs as an MCP tool")
+    p_mcp_register.add_argument("--mcp-config-path", dest="mcp_config_path", default=None)
+    p_mcp_register.set_defaults(func=cmd_mcp_register)
 
     p_serve = sub.add_parser("serve-registry", help="start the local registry, detached, surviving this terminal closing")
     p_serve.add_argument("--port", type=int, default=DEFAULT_REGISTRY_PORT)

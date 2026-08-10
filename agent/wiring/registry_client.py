@@ -43,9 +43,23 @@ class RegistryClient:
             outcome, message = "http_error", response.text
         raise RegistryRejection(response.status_code, outcome, message)
 
+    @staticmethod
+    def _trace_headers(trace_id: str | None) -> dict[str, str]:
+        """trace_id is pure observability metadata (agent/wiring/trace.py)
+        — never part of any signed payload, never read back or verified.
+        Omitted entirely when not supplied so every pre-existing call site
+        behaves exactly as before."""
+        return {"X-Relay-Trace-Id": trace_id} if trace_id else {}
+
     # ---- identities ----
 
-    def register_identity(self, handle: str, public_key_hex: str, x25519_public_key_hex: str) -> dict[str, Any]:
+    def register_identity(
+        self,
+        handle: str,
+        public_key_hex: str,
+        x25519_public_key_hex: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
         """Returns {"handle", "relay_number"} — the relay_number is
         server-generated (registry/services/identity_service.py), never
         chosen by this client."""
@@ -56,22 +70,25 @@ class RegistryClient:
                 "public_key_hex": public_key_hex,
                 "x25519_public_key_hex": x25519_public_key_hex,
             },
+            headers=self._trace_headers(trace_id),
         )
         self._raise_for_rejection(response)
         return response.json()
 
-    def get_identity(self, handle: str) -> dict[str, Any] | None:
-        response = self.http.get(f"{self.base_url}/identities/{handle}")
+    def get_identity(self, handle: str, trace_id: str | None = None) -> dict[str, Any] | None:
+        response = self.http.get(f"{self.base_url}/identities/{handle}", headers=self._trace_headers(trace_id))
         if response.status_code == 404:
             return None
         self._raise_for_rejection(response)
         return response.json()
 
-    def get_identity_by_relay_number(self, relay_number: str) -> dict[str, Any] | None:
+    def get_identity_by_relay_number(self, relay_number: str, trace_id: str | None = None) -> dict[str, Any] | None:
         """Contacts (wiring/contacts.py) resolve a saved local name to a
         relay_number, then this to the actual handle — mirrors
         get_identity exactly, just keyed the other way."""
-        response = self.http.get(f"{self.base_url}/identities/by-relay-number/{relay_number}")
+        response = self.http.get(
+            f"{self.base_url}/identities/by-relay-number/{relay_number}", headers=self._trace_headers(trace_id)
+        )
         if response.status_code == 404:
             return None
         self._raise_for_rejection(response)
@@ -80,7 +97,11 @@ class RegistryClient:
     # ---- relay ----
 
     def submit_relay(
-        self, payload_hex: str, signature_hex: str, content_ciphertext_hex: str | None = None
+        self,
+        payload_hex: str,
+        signature_hex: str,
+        content_ciphertext_hex: str | None = None,
+        trace_id: str | None = None,
     ) -> str:
         response = self.http.post(
             f"{self.base_url}/relay",
@@ -89,12 +110,13 @@ class RegistryClient:
                 "signature_hex": signature_hex,
                 "content_ciphertext_hex": content_ciphertext_hex,
             },
+            headers=self._trace_headers(trace_id),
         )
         self._raise_for_rejection(response)
         return response.json()["id"]
 
-    def fetch_pending(self, recipient: str) -> list[dict[str, Any]]:
-        response = self.http.get(f"{self.base_url}/relay/pending/{recipient}")
+    def fetch_pending(self, recipient: str, trace_id: str | None = None) -> list[dict[str, Any]]:
+        response = self.http.get(f"{self.base_url}/relay/pending/{recipient}", headers=self._trace_headers(trace_id))
         self._raise_for_rejection(response)
         return response.json()
 
@@ -110,6 +132,7 @@ class RegistryClient:
         nonce: str,
         signature_hex: str,
         expires_at: datetime | None = None,
+        trace_id: str | None = None,
     ) -> str:
         response = self.http.post(
             f"{self.base_url}/grants",
@@ -123,11 +146,14 @@ class RegistryClient:
                 "nonce": nonce,
                 "signature_hex": signature_hex,
             },
+            headers=self._trace_headers(trace_id),
         )
         self._raise_for_rejection(response)
         return response.json()["id"]
 
-    def revoke_grant(self, grant_id: str, timestamp: int, nonce: str, signature_hex: str) -> None:
+    def revoke_grant(
+        self, grant_id: str, timestamp: int, nonce: str, signature_hex: str, trace_id: str | None = None
+    ) -> None:
         response = self.http.post(
             f"{self.base_url}/grants/revoke",
             json={
@@ -136,6 +162,7 @@ class RegistryClient:
                 "nonce": nonce,
                 "signature_hex": signature_hex,
             },
+            headers=self._trace_headers(trace_id),
         )
         self._raise_for_rejection(response)
 

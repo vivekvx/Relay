@@ -13,8 +13,10 @@ from registry.api import (
     identity_routes,
     relay_routes,
 )
+from registry.logging_config import configure_logging
 
 app = FastAPI(title="Relay Registry")
+configure_logging()
 
 app.include_router(identity_routes.router)
 app.include_router(relay_routes.router)

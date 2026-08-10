@@ -425,3 +425,62 @@ flight, or observability, not unsolicited chat injection. Given no real
 mechanism exists in this installed SDK version, (a) is not a
 compromise — it is the only structurally available option, and it
 composes cleanly with the already-built native notification.
+
+## Observability: trace_id vs nonce correlation
+
+`trace_id` (`wiring/trace.py`) and `nonce` (`wiring/nonce.py`) look
+similar (both random hex strings attached to a request) but serve
+different, non-overlapping jobs:
+
+- **`nonce`** is part of the signed `RequestPayload` — identity/'s fixed
+  wire format. It is cryptographic (replay protection, PRD.md §5 R6) and
+  is the one value that travels all the way from the original caller to
+  the recipient's process, inside the signed/encrypted request itself.
+  It is the only thing that can correlate *across* the two independent
+  processes on either side of a `relay ask`.
+- **`trace_id`** is pure observability metadata — an unsigned
+  `X-Relay-Trace-Id` HTTP header, generated fresh per logical operation
+  (one `ask`/`grant`/`revoke`/MCP tool call), never part of any signed
+  payload, never read back or verified, never gates any authorization
+  decision. It only correlates log lines *within one process's own call
+  graph* — the caller's `ask_submitted`/`ask_answered` lines, or the
+  registry's `relay_request_received`/`...relayed` lines for that one
+  HTTP call.
+
+Because `trace_id` isn't in the signed payload, the recipient's process
+never receives the original caller's `trace_id` — there is no field to
+carry it. When the recipient's poll loop (`process_incoming_ask`) logs
+its own side of the exchange, it generates its own fresh `trace_id` for
+that leg. To trace one logical `ask` end-to-end across both machines and
+the registry, use `nonce` (already logged as `sender`/`nonce` in the
+`pending_relay_queue` row and in the caller's `request_id`/`nonce`
+result fields) — `trace_id` is single-process log correlation, `nonce`
+is cross-process request identity.
+
+## Network scenario matrix
+
+The registry is reached over HTTPS to a single public host
+(`relay-registry.onrender.com`) — there is no LAN-discovery, mDNS, or
+local-network-specific code path anywhere in `agent/wiring/registry_client.py`.
+That structural fact is what the "same machine / same wifi / different
+network / same company" collapse claim rests on: from the client's
+perspective, every one of those scenarios is identical HTTP+TLS to the
+same public endpoint.
+
+| Scenario | Verified how | Result |
+|---|---|---|
+| Same machine | Full existing test suite (`agent/tests`, `registry/tests`), real local HTTP against a real Postgres-backed FastAPI app | Directly tested, passing |
+| Same WiFi | Not independently testable in this sandbox (no second physical device available). Reasoned: the registry client only ever does `httpx` calls to a public HTTPS host — no LAN/mDNS path exists to behave differently on a shared WiFi network vs. any other network | Reasoned, not empirically tested — **needs a real second device to fully confirm** |
+| Different network entirely | `curl https://relay-registry.onrender.com/openapi.json` from this machine returned `200`, `title: "Relay Registry"` — proves the endpoint is publicly routable over the open internet, not reachable only from a specific network. This is reachability proof from **one vantage point**, not a two-human test | Reachability confirmed from this machine; cross-network exchange (one person's agent calling another's) still needs a real second human |
+| Same company network (shared/private registry) | Same reasoning as above — nothing in the design requires different handling for a corporate network. **Genuinely untestable here**: a corporate firewall/proxy that blocks Render's IP range or forces TLS interception is a real possible failure mode this sandbox cannot simulate | **Requires a real human on that network (e.g. Nitesh) to confirm** — not asserted as verified |
+
+**Honest summary:** "same machine" is the only row with full empirical
+test coverage from this environment. The "different network" row has
+partial empirical evidence (one-vantage-point public reachability, via
+the `curl` above and the gated `test_openapi_reachable_over_https` live
+test). "Same WiFi" and "same company network" are structurally reasoned
+from the client's HTTPS-only code path, not independently tested — closing
+that loop needs a real second person on a genuinely separate network
+(same WiFi and, especially, a company network with its own firewall/proxy
+behavior) to run `relay doctor` / send a real `relay ask` and confirm it
+behaves identically to the same-machine case.

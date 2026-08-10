@@ -174,6 +174,15 @@ Project-scoped: create `.mcp.json` in the repo root:
 
 Restart Claude Code (or run `/mcp` to reconnect) after adding this.
 
+Instead of hand-writing the JSON above, `relay mcp-register` will
+write (or repair) this same `.mcp.json` entry for you — idempotent, safe
+to re-run, corrects drifted values (wrong `cwd`/env) rather than only
+creating a fresh file. **Claude Code (`.mcp.json`) support is
+implemented and tested.** It also best-effort writes the same entry to
+a detected Antigravity config path — **Antigravity support is
+implemented but UNVERIFIED against a real Antigravity install; confirm
+it works there before relying on it.**
+
 ### Antigravity (and the Gemini CLI, which shares the same config)
 
 Global, not project-scoped: add a `relay` entry under `mcpServers` in
