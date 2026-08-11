@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = ["httpx", "mcp"]
 
 [project.scripts]
-relay = "cli:main"
+callsign = "cli:main"
 
 [tool.setuptools]
 py-modules = ["cli", "mcp_server"]

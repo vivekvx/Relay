@@ -1,6 +1,7 @@
-# Local MCP server exposing `relay ask` / `relay grant` / `relay revoke`
-# as MCP tools. Per idea.md §6 "Distribution" and PRD.md §3 (Core User
-# Flows) — this is the client/server both parties run locally.
+# Local MCP server exposing `callsign call` / `callsign allow` /
+# `callsign block` as MCP tools. Per idea.md §6 "Distribution" and
+# PRD.md §3 (Core User Flows) — this is the client/server both parties
+# run locally.
 #
 # This file is intentionally thin: tool handlers below only parse
 # arguments and call into agent/wiring/flows.py, which holds all the
@@ -42,29 +43,31 @@ from wiring.flows import (
     run_poll_loop,
 )
 from wiring.local_state import LocalIdentity, load_capsules
-from wiring.paths import REGISTRY_HOME, SERVE_META_FILE, SERVE_PID_FILE
+from wiring.paths import REGISTRY_HOME, SERVE_META_FILE, SERVE_PID_FILE, migrate_from_relay_if_needed
 from wiring.pending_approvals import PendingApproval, PendingApprovalStore
 from wiring.registry_client import RegistryClient, RegistryRejection
 from wiring.setup import ensure_listener_running, ensure_setup
 from wiring.threads import ThreadStore
 from wiring.trace import generate_trace_id
 
-logger = logging.getLogger("relay.agent")
+logger = logging.getLogger("callsign.agent")
 
 from approval import ApprovalDecision, ExcerptBounds, Outcome
 
-HANDLE = os.environ.get("RELAY_HANDLE", "")
-KEY_DIR = os.environ.get("RELAY_KEY_DIR", os.path.expanduser("~/.relay/keys"))
-CAPSULE_DIR = os.environ.get("RELAY_CAPSULE_DIR", os.path.expanduser("~/.relay/capsules"))
-REGISTRY_URL = os.environ.get("RELAY_REGISTRY_URL", "http://localhost:8000")
-POLL_INTERVAL_SECS = float(os.environ.get("RELAY_POLL_INTERVAL_SECS", "5"))
-THREAD_STORE_PATH = os.environ.get("RELAY_THREAD_STORE", os.path.expanduser("~/.relay/threads.json"))
-DISCLOSURE_LOG_PATH = os.environ.get("RELAY_DISCLOSURE_LOG", os.path.expanduser("~/.relay/disclosure_log.json"))
+migrate_from_relay_if_needed()
+
+HANDLE = os.environ.get("CALLSIGN_HANDLE", "")
+KEY_DIR = os.environ.get("CALLSIGN_KEY_DIR", os.path.expanduser("~/.callsign/keys"))
+CAPSULE_DIR = os.environ.get("CALLSIGN_CAPSULE_DIR", os.path.expanduser("~/.callsign/capsules"))
+REGISTRY_URL = os.environ.get("CALLSIGN_REGISTRY_URL", "http://localhost:8000")
+POLL_INTERVAL_SECS = float(os.environ.get("CALLSIGN_POLL_INTERVAL_SECS", "5"))
+THREAD_STORE_PATH = os.environ.get("CALLSIGN_THREAD_STORE", os.path.expanduser("~/.callsign/threads.json"))
+DISCLOSURE_LOG_PATH = os.environ.get("CALLSIGN_DISCLOSURE_LOG", os.path.expanduser("~/.callsign/disclosure_log.json"))
 PENDING_APPROVALS_PATH = os.environ.get(
-    "RELAY_PENDING_APPROVALS", os.path.expanduser("~/.relay/pending_approvals.json")
+    "CALLSIGN_PENDING_APPROVALS", os.path.expanduser("~/.callsign/pending_approvals.json")
 )
-CONFIG_PATH = Path(os.environ.get("RELAY_CONFIG", str(Path.home() / ".relay" / "config.toml")))
-CONTACTS_PATH = os.environ.get("RELAY_CONTACTS", os.path.expanduser("~/.relay/contacts.json"))
+CONFIG_PATH = Path(os.environ.get("CALLSIGN_CONFIG", str(Path.home() / ".callsign" / "config.toml")))
+CONTACTS_PATH = os.environ.get("CALLSIGN_CONTACTS", os.path.expanduser("~/.callsign/contacts.json"))
 
 local_identity: LocalIdentity | None = None
 registry: RegistryClient | None = None
@@ -80,7 +83,7 @@ def _ensure_initialized() -> tuple[LocalIdentity, RegistryClient]:
     global local_identity, registry
     if local_identity is None:
         if not HANDLE:
-            raise RuntimeError("RELAY_HANDLE must be set before the server can sign anything")
+            raise RuntimeError("CALLSIGN_HANDLE must be set before the server can sign anything")
         local_identity = LocalIdentity.load_or_create(HANDLE, KEY_DIR)
         registry = RegistryClient.create(REGISTRY_URL)
     return local_identity, registry
@@ -97,10 +100,10 @@ def start_background_poll_loop() -> threading.Thread:
     process's stdin is the JSON-RPC channel Claude Code talks to it
     over, not an interactive terminal, so process_incoming_ask must
     never call input() on it. An ad hoc approval request queues instead
-    (same wiring/pending_approvals.py store `relay serve` uses) and
-    fires the same native notification; relay_pending_requests/
-    relay_respond_to_request below are this process's own equivalent of
-    `relay pending`, callable from inside Paul's own chat."""
+    (same wiring/pending_approvals.py store `callsign standby` uses) and
+    fires the same native notification; callsign_missed/
+    callsign_answer below are this process's own equivalent of
+    `callsign missed`, callable from inside Paul's own chat."""
     identity, client = _ensure_initialized()
     thread = threading.Thread(
         target=run_poll_loop,
@@ -115,8 +118,8 @@ def start_background_poll_loop() -> threading.Thread:
 async def _on_list_tools(ctx, params) -> types.ListToolsResult:
     return types.ListToolsResult(tools=[
         types.Tool(
-            name="relay_ask",
-            description="Ask a specific person's Relay agent a question; only pre-approved or live-approved capsule content is ever returned.",
+            name="callsign_call",
+            description="Ask a specific person's Callsign agent a question; only pre-approved or live-approved capsule content is ever returned.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -127,7 +130,7 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
                     "question": {"type": "string"},
                     "thread_id": {
                         "type": "string",
-                        "description": "continue an existing conversation (from a prior relay_ask response's thread_id); omit to start a new one",
+                        "description": "continue an existing conversation (from a prior callsign_call response's thread_id); omit to start a new one",
                     },
                     "reason": {
                         "type": "string",
@@ -142,7 +145,7 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             },
         ),
         types.Tool(
-            name="relay_grant",
+            name="callsign_allow",
             description="Create a standing grant so a sender never has to be re-approved for a topic/capsule set.",
             input_schema={
                 "type": "object",
@@ -159,7 +162,7 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             },
         ),
         types.Tool(
-            name="relay_revoke",
+            name="callsign_block",
             description="Revoke a standing grant immediately.",
             input_schema={
                 "type": "object",
@@ -168,8 +171,8 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             },
         ),
         types.Tool(
-            name="relay_check",
-            description="Check whether a pending relay_ask (request_id from its 'pending' response) has been answered yet.",
+            name="callsign_callback",
+            description="Check whether a pending callsign_call (request_id from its 'pending' response) has been answered yet.",
             input_schema={
                 "type": "object",
                 "properties": {"request_id": {"type": "string"}},
@@ -177,9 +180,9 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             },
         ),
         types.Tool(
-            name="relay_setup",
+            name="callsign_setup",
             description=(
-                "Set up Relay end-to-end: writes local config, registers this identity with the registry, "
+                "Set up Callsign end-to-end: writes local config, registers this identity with the registry, "
                 "and starts the background listener so incoming asks are reachable even when this chat isn't "
                 "open. Safe to call repeatedly — if already set up, reports current status without re-creating "
                 "or corrupting anything."
@@ -197,7 +200,7 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             },
         ),
         types.Tool(
-            name="relay_status",
+            name="callsign_signal",
             description=(
                 "Run diagnostic checks: registry reachable, identity registered, local key matches registered, "
                 "listener running, MCP config paths correct. Each check reports pass/fail with a specific fix."
@@ -205,26 +208,26 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             input_schema={"type": "object", "properties": {}},
         ),
         types.Tool(
-            name="relay_pending_requests",
+            name="callsign_missed",
             description=(
                 "List ad hoc approval requests waiting for YOU to decide, as the approver — the same queue "
-                "`relay serve`/`relay pending` use, just returned as structured data so this chat can present "
-                "it conversationally. Call this when the person asks to check their Relay requests, or after "
-                "a Relay notification."
+                "`callsign standby`/`callsign missed` use, just returned as structured data so this chat can present "
+                "it conversationally. Call this when the person asks to check their Callsign requests, or after "
+                "a Callsign notification."
             ),
             input_schema={"type": "object", "properties": {}},
         ),
         types.Tool(
-            name="relay_respond_to_request",
+            name="callsign_answer",
             description=(
-                "Answer one queued approval request (from relay_pending_requests) with an unambiguous decision. "
+                "Answer one queued approval request (from callsign_missed) with an unambiguous decision. "
                 "If the person's chat message doesn't clearly map to exactly one decision type and its required "
                 "fields, ask a clarifying question instead of guessing — this tool does not infer intent."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "request_id": {"type": "string", "description": "from relay_pending_requests' request_id field"},
+                    "request_id": {"type": "string", "description": "from callsign_missed's request_id field"},
                     "decision": {
                         "type": "string",
                         "enum": ["approve_whole", "approve_excerpt", "deny", "manual_answer"],
@@ -251,7 +254,7 @@ async def _on_list_tools(ctx, params) -> types.ListToolsResult:
 
 
 def _build_decision_from_response_args(pending: PendingApproval, arguments: dict, capsules_by_id: dict) -> ApprovalDecision:
-    """Translates relay_respond_to_request's structured MCP args into the
+    """Translates callsign_answer's structured MCP args into the
     real ApprovalDecision type — SAME type, same __post_init__ invariants
     approval/interaction.py's terminal picker already relies on (this
     task's explicit "do not reimplement approval decision handling").
@@ -311,7 +314,7 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
     trace_id = generate_trace_id()
     logger.info("mcp_tool_call trace_id=%s tool=%s", trace_id, name)
     try:
-        if name == "relay_ask":
+        if name == "callsign_call":
             recipient = resolve_recipient(contacts_store, client, arguments["recipient"])
             result = ask(
                 identity, client, recipient, arguments["question"], response_registry, thread_store,
@@ -319,7 +322,7 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
                 reason=arguments.get("reason", ""), urgency=arguments.get("urgency", ""),
             )
             return {**result, "trace_id": result.get("trace_id", trace_id)}
-        if name == "relay_grant":
+        if name == "callsign_allow":
             expires_at = None
             if arguments.get("expires_at"):
                 expires_at = datetime.fromisoformat(arguments["expires_at"])
@@ -334,16 +337,16 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
                 trace_id=trace_id,
             )
             return {"id": grant_id, "trace_id": trace_id}
-        if name == "relay_revoke":
+        if name == "callsign_block":
             revoke(identity, client, arguments["grant_id"], trace_id=trace_id)
             return {"revoked": True, "trace_id": trace_id}
-        if name == "relay_check":
+        if name == "callsign_callback":
             result = check_pending(
                 identity, client, CAPSULE_DIR, rate_limiter, response_registry, thread_store, disclosure_log,
                 arguments["request_id"],
             )
             return {**result, "trace_id": trace_id}
-        if name == "relay_setup":
+        if name == "callsign_setup":
             setup_handle = arguments.get("handle") or HANDLE
             setup_result = ensure_setup(
                 setup_handle,
@@ -364,9 +367,9 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
                 "listener": listener_result,
                 "trace_id": trace_id,
             }
-        if name == "relay_status":
+        if name == "callsign_signal":
             config = {"registry_url": REGISTRY_URL, "handle": HANDLE, "key_dir": KEY_DIR}
-            mcp_config_path = Path(os.environ.get("RELAY_MCP_CONFIG_PATH", "")) if os.environ.get("RELAY_MCP_CONFIG_PATH") else None
+            mcp_config_path = Path(os.environ.get("CALLSIGN_MCP_CONFIG_PATH", "")) if os.environ.get("CALLSIGN_MCP_CONFIG_PATH") else None
             results = run_diagnostics(config, SERVE_PID_FILE, mcp_config_path=mcp_config_path)
             return {
                 "checks": [
@@ -374,12 +377,12 @@ def dispatch_tool_call(name: str, arguments: dict) -> dict:
                 ],
                 "trace_id": trace_id,
             }
-        if name == "relay_pending_requests":
+        if name == "callsign_missed":
             return {
                 "pending": list_pending_approvals_with_candidates(CAPSULE_DIR, pending_approval_store),
                 "trace_id": trace_id,
             }
-        if name == "relay_respond_to_request":
+        if name == "callsign_answer":
             request_id = arguments["request_id"]
             pending = pending_approval_store.get(request_id)
             if pending is None:
@@ -424,14 +427,14 @@ async def _on_call_tool(ctx, params: types.CallToolRequestParams) -> types.CallT
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))])
 
 
-server = Server("relay", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
+server = Server("callsign", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
 
 
 # No run loop previously existed here — `server` was defined but nothing
 # ever called .run(), so this file could not actually be launched as an
 # MCP server process. This is the missing piece: stdio transport (the
 # only transport Claude Code's local MCP registration needs), plus
-# kicking off the background poll loop so relay_ask has something
+# kicking off the background poll loop so callsign_call has something
 # delivering ask_response items back to it.
 async def _amain() -> None:
     import mcp.server.stdio

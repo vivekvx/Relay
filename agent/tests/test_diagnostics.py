@@ -27,7 +27,7 @@ def test_stale_local_key_mismatch_fails_with_fix(tmp_path, monkeypatch):
     results = run_diagnostics(config, tmp_path / "serve.pid")
     by_name = {r.name: r for r in results}
     assert by_name["local_key_matches_registered"].passed is False
-    assert "whoami" in by_name["local_key_matches_registered"].fix
+    assert "mynumber" in by_name["local_key_matches_registered"].fix
 
 
 def test_port_collision_lookalike_service_fails_registry_reachable(tmp_path, monkeypatch):
@@ -55,7 +55,7 @@ def test_orphaned_pidfile_dead_process_fails_listener_running(tmp_path, monkeypa
     results = run_diagnostics(_base_config(tmp_path), pid_file)
     by_name = {r.name: r for r in results}
     assert by_name["listener_running"].passed is False
-    assert "relay serve" in by_name["listener_running"].fix or "relay_setup" in by_name["listener_running"].fix
+    assert "callsign standby" in by_name["listener_running"].fix or "callsign_setup" in by_name["listener_running"].fix
 
 
 def test_mcp_config_key_dir_drift_fails_with_fix(tmp_path, monkeypatch):
@@ -67,13 +67,13 @@ def test_mcp_config_key_dir_drift_fails_with_fix(tmp_path, monkeypatch):
     config = _base_config(tmp_path)
     mcp_config_path = tmp_path / ".mcp.json"
     mcp_config_path.write_text(json.dumps({
-        "mcpServers": {"relay": {"env": {"RELAY_KEY_DIR": "/totally/different/path"}}}
+        "mcpServers": {"callsign": {"env": {"CALLSIGN_KEY_DIR": "/totally/different/path"}}}
     }))
 
     results = run_diagnostics(config, tmp_path / "serve.pid", mcp_config_path=mcp_config_path)
     by_name = {r.name: r for r in results}
     assert by_name["mcp_config_paths_match"].passed is False
-    assert "RELAY_KEY_DIR" in by_name["mcp_config_paths_match"].detail
+    assert "CALLSIGN_KEY_DIR" in by_name["mcp_config_paths_match"].detail
 
 
 def test_mcp_config_matching_passes(tmp_path, monkeypatch):
@@ -83,7 +83,7 @@ def test_mcp_config_matching_passes(tmp_path, monkeypatch):
     config = _base_config(tmp_path)
     mcp_config_path = tmp_path / ".mcp.json"
     mcp_config_path.write_text(json.dumps({
-        "mcpServers": {"relay": {"env": {"RELAY_KEY_DIR": config["key_dir"]}}}
+        "mcpServers": {"callsign": {"env": {"CALLSIGN_KEY_DIR": config["key_dir"]}}}
     }))
 
     results = run_diagnostics(config, tmp_path / "serve.pid", mcp_config_path=mcp_config_path)
@@ -99,4 +99,4 @@ def test_missing_mcp_config_fails_with_fix(tmp_path, monkeypatch):
     results = run_diagnostics(config, tmp_path / "serve.pid", mcp_config_path=tmp_path / "nonexistent.json")
     by_name = {r.name: r for r in results}
     assert by_name["mcp_config_paths_match"].passed is False
-    assert "mcp-register" in by_name["mcp_config_paths_match"].fix
+    assert "connect" in by_name["mcp_config_paths_match"].fix

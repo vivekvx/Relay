@@ -51,7 +51,7 @@ def test_dispatch_tool_call_error_dict_includes_trace_id(monkeypatch):
         raise RegistryRejection(404, "unknown_recipient", "nope")
 
     monkeypatch.setattr(mcp_server, "resolve_recipient", _boom)
-    result = mcp_server.dispatch_tool_call("relay_ask", {"recipient": "nobody", "question": "hi"})
+    result = mcp_server.dispatch_tool_call("callsign_call", {"recipient": "nobody", "question": "hi"})
     assert result["error"] == "unknown_recipient"
     assert result["trace_id"]
     assert "fix" in result

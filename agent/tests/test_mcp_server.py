@@ -93,24 +93,24 @@ async def _call_tool(module, name: str, arguments: dict) -> dict:
 
 def _make_modules(tmp_path, registry_url: str, suffix: str) -> tuple[object, object]:
     vivek_module = _load_mcp_server_module(f"mcp_server_vivek_{suffix}", {
-        "RELAY_HANDLE": "vivek",
-        "RELAY_KEY_DIR": str(tmp_path / "vivek" / "keys"),
-        "RELAY_CAPSULE_DIR": str(tmp_path / "vivek_capsules"),
-        "RELAY_REGISTRY_URL": registry_url,
-        "RELAY_THREAD_STORE": str(tmp_path / f"vivek_threads_{suffix}.json"),
-        "RELAY_DISCLOSURE_LOG": str(tmp_path / f"vivek_disclosure_{suffix}.json"),
-        "RELAY_PENDING_APPROVALS": str(tmp_path / f"vivek_pending_{suffix}.json"),
-        "RELAY_CONTACTS": str(tmp_path / f"vivek_contacts_{suffix}.json"),
+        "CALLSIGN_HANDLE": "vivek",
+        "CALLSIGN_KEY_DIR": str(tmp_path / "vivek" / "keys"),
+        "CALLSIGN_CAPSULE_DIR": str(tmp_path / "vivek_capsules"),
+        "CALLSIGN_REGISTRY_URL": registry_url,
+        "CALLSIGN_THREAD_STORE": str(tmp_path / f"vivek_threads_{suffix}.json"),
+        "CALLSIGN_DISCLOSURE_LOG": str(tmp_path / f"vivek_disclosure_{suffix}.json"),
+        "CALLSIGN_PENDING_APPROVALS": str(tmp_path / f"vivek_pending_{suffix}.json"),
+        "CALLSIGN_CONTACTS": str(tmp_path / f"vivek_contacts_{suffix}.json"),
     })
     rohan_module = _load_mcp_server_module(f"mcp_server_rohan_{suffix}", {
-        "RELAY_HANDLE": "rohan",
-        "RELAY_KEY_DIR": str(tmp_path / "rohan" / "keys"),
-        "RELAY_CAPSULE_DIR": str(tmp_path / "rohan_capsules"),
-        "RELAY_REGISTRY_URL": registry_url,
-        "RELAY_THREAD_STORE": str(tmp_path / f"rohan_threads_{suffix}.json"),
-        "RELAY_DISCLOSURE_LOG": str(tmp_path / f"rohan_disclosure_{suffix}.json"),
-        "RELAY_PENDING_APPROVALS": str(tmp_path / f"rohan_pending_{suffix}.json"),
-        "RELAY_CONTACTS": str(tmp_path / f"rohan_contacts_{suffix}.json"),
+        "CALLSIGN_HANDLE": "rohan",
+        "CALLSIGN_KEY_DIR": str(tmp_path / "rohan" / "keys"),
+        "CALLSIGN_CAPSULE_DIR": str(tmp_path / "rohan_capsules"),
+        "CALLSIGN_REGISTRY_URL": registry_url,
+        "CALLSIGN_THREAD_STORE": str(tmp_path / f"rohan_threads_{suffix}.json"),
+        "CALLSIGN_DISCLOSURE_LOG": str(tmp_path / f"rohan_disclosure_{suffix}.json"),
+        "CALLSIGN_PENDING_APPROVALS": str(tmp_path / f"rohan_pending_{suffix}.json"),
+        "CALLSIGN_CONTACTS": str(tmp_path / f"rohan_contacts_{suffix}.json"),
     })
     return vivek_module, rohan_module
 
@@ -132,8 +132,8 @@ def test_both_directions_approval_loop_via_real_mcp_calls(tmp_path, registry_cli
     vivek_module, rohan_module = _make_modules(tmp_path, registry_client.base_url, "loop")
 
     async def run():
-        # Asker side, entirely via MCP: relay_ask.
-        ask_result = await _call_tool(vivek_module, "relay_ask", {
+        # Asker side, entirely via MCP: callsign_call.
+        ask_result = await _call_tool(vivek_module, "callsign_call", {
             "recipient": "rohan",
             "question": "how do you handle webhook retries?",
             "reason": "debugging a similar retry issue in my own project",
@@ -144,8 +144,8 @@ def test_both_directions_approval_loop_via_real_mcp_calls(tmp_path, registry_cli
 
         _deliver(rohan_module)  # rohan's poll tick: verifies+decrypts+queues headless
 
-        # Approver side, entirely via MCP: relay_pending_requests.
-        pending_result = await _call_tool(rohan_module, "relay_pending_requests", {})
+        # Approver side, entirely via MCP: callsign_missed.
+        pending_result = await _call_tool(rohan_module, "callsign_missed", {})
         assert len(pending_result["pending"]) == 1
         item = pending_result["pending"][0]
         assert item["request_id"] == request_id
@@ -155,8 +155,8 @@ def test_both_directions_approval_loop_via_real_mcp_calls(tmp_path, registry_cli
         assert item["urgency"] == "not time-sensitive"
         assert item["candidates"][0]["capsule_id"] == "backoff"
 
-        # Approver side, entirely via MCP: relay_respond_to_request.
-        respond_result = await _call_tool(rohan_module, "relay_respond_to_request", {
+        # Approver side, entirely via MCP: callsign_answer.
+        respond_result = await _call_tool(rohan_module, "callsign_answer", {
             "request_id": request_id,
             "decision": "approve_whole",
             "capsule_ids": ["backoff"],
@@ -166,8 +166,8 @@ def test_both_directions_approval_loop_via_real_mcp_calls(tmp_path, registry_cli
 
         _deliver(vivek_module)  # vivek's poll tick: delivers the ask_response
 
-        # Asker side, entirely via MCP: relay_check gets the real answer.
-        check_result = await _call_tool(vivek_module, "relay_check", {"request_id": request_id})
+        # Asker side, entirely via MCP: callsign_callback gets the real answer.
+        check_result = await _call_tool(vivek_module, "callsign_callback", {"request_id": request_id})
         assert check_result["status"] == "answered"
         assert check_result["outcome"] == "approved_whole"
         assert check_result["cited_capsule_ids"] == ["backoff"]
@@ -188,24 +188,24 @@ def test_ambiguous_decision_is_rejected_not_guessed(tmp_path, registry_client, m
     vivek_module, rohan_module = _make_modules(tmp_path, registry_client.base_url, "ambig")
 
     async def run():
-        ask_result = await _call_tool(vivek_module, "relay_ask", {"recipient": "rohan", "question": "webhook retries?"})
+        ask_result = await _call_tool(vivek_module, "callsign_call", {"recipient": "rohan", "question": "webhook retries?"})
         request_id = ask_result["nonce"]
 
         _deliver(rohan_module)
 
-        pending_result = await _call_tool(rohan_module, "relay_pending_requests", {})
+        pending_result = await _call_tool(rohan_module, "callsign_missed", {})
         assert len(pending_result["pending"]) == 1
 
         # No capsule_ids given for approve_whole — ambiguous, must be
         # rejected, never guessed/defaulted to approval.
-        respond_result = await _call_tool(rohan_module, "relay_respond_to_request", {
+        respond_result = await _call_tool(rohan_module, "callsign_answer", {
             "request_id": request_id, "decision": "approve_whole",
         })
         assert respond_result["error"] == "ambiguous_decision"
 
         # The request is still queued — rejecting the ambiguous call did
         # not silently consume or answer it.
-        still_pending = await _call_tool(rohan_module, "relay_pending_requests", {})
+        still_pending = await _call_tool(rohan_module, "callsign_missed", {})
         assert len(still_pending["pending"]) == 1
 
     asyncio.run(run())

@@ -1,9 +1,10 @@
-# Shared diagnostic checks, used by BOTH `relay doctor` (cli.py) and the
-# `relay_status` MCP tool (mcp_server.py) — moved here from cli.py (where
-# they originally lived as CLI-only helpers for `relay init`/`relay
-# whoami`/`relay serve-registry`) so neither surface reimplements the
-# other's checks. Pure move for the four pre-existing functions; only
-# run_diagnostics() and the mcp-config-path check are new.
+# Shared diagnostic checks, used by BOTH `callsign signal` (cli.py) and
+# the `callsign_signal` MCP tool (mcp_server.py) — moved here from
+# cli.py (where they originally lived as CLI-only helpers for `callsign
+# setup`/`callsign mynumber`/`callsign switchboard`) so neither surface
+# reimplements the other's checks. Pure move for the four pre-existing
+# functions; only run_diagnostics() and the mcp-config-path check are
+# new.
 
 from __future__ import annotations
 
@@ -52,7 +53,7 @@ def pid_alive_from_file(pid_file: Path) -> int | None:
 
 
 def registered_pubkey(registry_url: str, handle: str) -> str | None | object:
-    """Same check `relay register` relies on (RegistryClient.get_identity
+    """Same check `callsign setup` relies on (RegistryClient.get_identity
     -> None on 404) — reused here, not duplicated.
 
     Returns the registered pubkey hex, None if the handle isn't
@@ -80,9 +81,9 @@ def run_diagnostics(
     serve_pid_file: Path,
     mcp_config_path: Path | None = None,
 ) -> list[DiagnosticResult]:
-    """One shared diagnostic function — `relay doctor` and `relay_status`
-    both call this and only format the output differently. config needs
-    "registry_url", "handle", "key_dir"."""
+    """One shared diagnostic function — `callsign signal` and
+    `callsign_signal` both call this and only format the output
+    differently. config needs "registry_url", "handle", "key_dir"."""
     results: list[DiagnosticResult] = []
 
     registry_url = config["registry_url"]
@@ -99,7 +100,7 @@ def run_diagnostics(
     handle = config.get("handle", "")
     pubkey = registered_pubkey(registry_url, handle) if handle else None
     if not handle:
-        results.append(DiagnosticResult("identity_registered", False, "no handle configured", fix="Run `relay init`."))
+        results.append(DiagnosticResult("identity_registered", False, "no handle configured", fix="Run `callsign setup`."))
     elif pubkey is UNREACHABLE:
         results.append(
             DiagnosticResult("identity_registered", False, "cannot verify — registry unreachable", fix="")
@@ -110,7 +111,7 @@ def run_diagnostics(
                 "identity_registered",
                 pubkey is not None,
                 f"@{handle}" if pubkey is not None else f"@{handle} not registered",
-                fix="" if pubkey is not None else "Run `relay register`.",
+                fix="" if pubkey is not None else "Run `callsign setup`.",
             )
         )
 
@@ -130,8 +131,8 @@ def run_diagnostics(
                 fix=(
                     ""
                     if matches
-                    else "Local key doesn't match what's registered. Run `relay whoami` to confirm, "
-                    "then `relay register` or `relay init --force`."
+                    else "Local key doesn't match what's registered. Run `callsign mynumber` to confirm, "
+                    "then `callsign setup --force`."
                 ),
             )
         )
@@ -142,7 +143,7 @@ def run_diagnostics(
             "listener_running",
             listener_pid is not None,
             f"pid={listener_pid}" if listener_pid else str(serve_pid_file),
-            fix="" if listener_pid is not None else "Run `relay serve` (or call `relay_setup`) to start the listener.",
+            fix="" if listener_pid is not None else "Run `callsign standby` (or call `callsign_setup`) to start the listener.",
         )
     )
 
@@ -153,16 +154,16 @@ def run_diagnostics(
                     "mcp_config_paths_match",
                     False,
                     f"{mcp_config_path} does not exist",
-                    fix="Run `relay mcp-register`.",
+                    fix="Run `callsign connect`.",
                 )
             )
         else:
             try:
                 mcp_config = json.loads(mcp_config_path.read_text())
-                env = mcp_config.get("mcpServers", {}).get("relay", {}).get("env", {})
+                env = mcp_config.get("mcpServers", {}).get("callsign", {}).get("env", {})
                 mismatches = []
-                for field, key in (("key_dir", "RELAY_KEY_DIR"), ("capsule_dir", "RELAY_CAPSULE_DIR"),
-                                    ("handle", "RELAY_HANDLE"), ("registry_url", "RELAY_REGISTRY_URL")):
+                for field, key in (("key_dir", "CALLSIGN_KEY_DIR"), ("capsule_dir", "CALLSIGN_CAPSULE_DIR"),
+                                    ("handle", "CALLSIGN_HANDLE"), ("registry_url", "CALLSIGN_REGISTRY_URL")):
                     if config.get(field) and env.get(key) and config[field] != env[key]:
                         mismatches.append(key)
                 results.append(
@@ -170,14 +171,14 @@ def run_diagnostics(
                         "mcp_config_paths_match",
                         not mismatches,
                         f"{mcp_config_path}" if not mismatches else f"drifted fields: {mismatches}",
-                        fix="" if not mismatches else "Run `relay mcp-register` to repair.",
+                        fix="" if not mismatches else "Run `callsign connect` to repair.",
                     )
                 )
             except (json.JSONDecodeError, KeyError):
                 results.append(
                     DiagnosticResult(
                         "mcp_config_paths_match", False, f"{mcp_config_path} is malformed",
-                        fix="Run `relay mcp-register` to rewrite it.",
+                        fix="Run `callsign connect` to rewrite it.",
                     )
                 )
 

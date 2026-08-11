@@ -1,9 +1,9 @@
 # Non-interactive setup + listener-autostart logic, shared by the CLI
-# (`relay init`/`relay register`/`relay serve`) and the new `relay_setup`
-# MCP tool — an MCP tool call has no terminal to prompt on, so this
-# module only ever does the non-interactive path cmd_init/cmd_register
-# already support via --non-interactive/--force; the interactive
-# prompt/confirm layer stays in cli.py.
+# (`callsign setup`) and the `callsign_setup` MCP tool — an MCP tool call
+# has no terminal to prompt on, so this module only ever does the
+# non-interactive path cmd_setup already supports via
+# --non-interactive/--force; the interactive prompt/confirm layer stays
+# in cli.py.
 #
 # Idempotent by construction: re-calling ensure_setup with the same
 # config just rewrites the same TOML content and hits the registry's
@@ -38,7 +38,8 @@ class SetupResult:
 
 def _write_config_toml(config_path: Path, config: dict) -> None:
     """Same TOML shape cli.py's _write_config already produces — kept
-    identical so `relay init`/`relay_setup` write byte-compatible files."""
+    identical so `callsign setup` (CLI) and `callsign_setup` (MCP) write
+    byte-compatible files."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("".join(f'{k} = "{v}"\n' for k, v in config.items()))
 
@@ -51,11 +52,10 @@ def ensure_setup(
     config_path: Path,
     force: bool = False,
 ) -> SetupResult:
-    """Idempotent: safe to call every time relay_setup fires, including
-    on every MCP reconnect. Non-interactive equivalent of cmd_init +
-    cmd_register chained: writes config (if missing or --force), then
-    registers (or reports already-registered via the existing 409-swallow
-    pattern)."""
+    """Idempotent: safe to call every time callsign_setup fires, including
+    on every MCP reconnect. Non-interactive core of `callsign setup`:
+    writes config (if missing or --force), then registers (or reports
+    already-registered via the existing 409-swallow pattern)."""
     warnings: list[str] = []
     already_configured = config_path.exists()
 
@@ -118,10 +118,10 @@ def ensure_listener_running(
     popen_fn=subprocess.Popen,
 ) -> dict:
     """Extracted from cmd_serve's spawn block, unchanged behavior — the
-    single source both `relay serve` and `relay_setup` call, so an
-    already-running listener is never double-spawned regardless of which
-    surface triggered the check (pidfile-liveness, same pattern as
-    serve-registry's detection logic)."""
+    single source both `callsign standby` and `callsign_setup` call, so
+    an already-running listener is never double-spawned regardless of
+    which surface triggered the check (pidfile-liveness, same pattern as
+    switchboard's detection logic)."""
     pid = pid_alive_from_file(serve_pid_file)
     if pid is not None:
         return {"status": "already_running", "pid": pid}
@@ -129,7 +129,7 @@ def ensure_listener_running(
     registry_home.mkdir(parents=True, exist_ok=True)
     with open(serve_log_file, "a") as log:
         process = popen_fn(
-            [sys.executable, "-m", "cli", "listen", "--headless", "--interval", str(interval)],
+            [sys.executable, "-m", "cli", "pickup", "--headless", "--interval", str(interval)],
             cwd=agent_dir,
             env=dict(os.environ),
             stdout=log,

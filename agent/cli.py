@@ -1,15 +1,15 @@
-# `relay` console script. Thin argument-parsing + dispatch only — every
-# subcommand below calls the exact same wiring.flows/local_state/
+# `callsign` console script. Thin argument-parsing + dispatch only —
+# every subcommand below calls the exact same wiring.flows/local_state/
 # registry_client functions mcp_server.py and the manual-walkthrough
 # scripts already used. No new business logic lives here.
 #
-# Config replaces hand-typed env vars (RELAY_HANDLE/RELAY_CAPSULE_DIR/
-# RELAY_KEY_DIR/RELAY_REGISTRY_URL): `relay init` writes a small TOML
-# file once, every other subcommand reads it. RELAY_CONFIG can point at
-# an alternate config file — the one deliberate escape hatch, needed to
-# run two identities (e.g. @vivek and @friend) from one machine during
-# a manual walkthrough, which is otherwise exactly the real one-person-
-# one-machine model this whole project assumes.
+# Config replaces hand-typed env vars (CALLSIGN_HANDLE/CALLSIGN_CAPSULE_DIR/
+# CALLSIGN_KEY_DIR/CALLSIGN_REGISTRY_URL): `callsign setup` writes a small
+# TOML file once, every other subcommand reads it. CALLSIGN_CONFIG can
+# point at an alternate config file — the one deliberate escape hatch,
+# needed to run two identities (e.g. @vivek and @friend) from one machine
+# during a manual walkthrough, which is otherwise exactly the real
+# one-person-one-machine model this whole project assumes.
 
 from __future__ import annotations
 
@@ -42,19 +42,20 @@ from wiring.flows import (
     run_poll_loop,
     sweep_expired_pending_approvals,
 )
-from wiring.flows import _my_grants_as_grantor  # existing helper, reused as-is for `relay grants`
+from wiring.flows import _my_grants_as_grantor  # existing helper, reused as-is for `callsign allowed`
 from wiring.local_state import LocalIdentity
 from wiring.pending_approvals import PendingApprovalStore
-from wiring.registry_client import RegistryClient, RegistryRejection
+from wiring.registry_client import RegistryClient
 from wiring.threads import ThreadStore
 from wiring.trace import generate_trace_id
+from wiring.paths import migrate_from_relay_if_needed
 
-CONFIG_PATH = Path(os.environ.get("RELAY_CONFIG", str(Path.home() / ".relay" / "config.toml")))
+CONFIG_PATH = Path(os.environ.get("CALLSIGN_CONFIG", str(Path.home() / ".callsign" / "config.toml")))
 
 
 def _load_config() -> dict:
     if not CONFIG_PATH.exists():
-        print(f"no config at {CONFIG_PATH} — run `relay init` first", file=sys.stderr)
+        print(f"no config at {CONFIG_PATH} — run `callsign setup` first", file=sys.stderr)
         sys.exit(1)
     with open(CONFIG_PATH, "rb") as f:
         return tomllib.load(f)
@@ -73,7 +74,7 @@ def _connect(config: dict) -> tuple[LocalIdentity, RegistryClient]:
 
 def _thread_store(config: dict) -> ThreadStore:
     # .get with a fallback: configs written before this feature existed
-    # have no "thread_store" key — don't force a `relay init` re-run.
+    # have no "thread_store" key — don't force a `callsign setup` re-run.
     path = config.get("thread_store", str(CONFIG_PATH.parent / "threads.json"))
     return ThreadStore(path)
 
@@ -116,9 +117,9 @@ from wiring.paths import REGISTRY_HOME, SERVE_META_FILE, SERVE_PID_FILE  # noqa:
 REGISTRY_PID_FILE = REGISTRY_HOME / "registry.pid"
 REGISTRY_LOG_FILE = REGISTRY_HOME / "registry.log"
 REPO_ROOT = Path(__file__).resolve().parent.parent  # agent/cli.py -> repo root (contains registry/)
-AGENT_DIR = Path(__file__).resolve().parent  # cwd for the detached `relay serve` worker subprocess
+AGENT_DIR = Path(__file__).resolve().parent  # cwd for the detached `callsign standby` worker subprocess
 
-# `relay serve` — same detachment approach as serve-registry below
+# `callsign standby` — same detachment approach as switchboard below
 # (start_new_session=True; PPID becomes 1; survives the launching
 # terminal closing), reused rather than reinvented (this task's
 # explicit instruction).
@@ -127,22 +128,25 @@ SERVE_LOG_FILE = REGISTRY_HOME / "serve.log"
 # macOS-only (this task's explicit scoping decision — no Windows/Linux
 # background-service support in this pass, consistent with identity/'s
 # existing Unix-first stance).
-LAUNCHD_LABEL = "com.relay.serve"
+LAUNCHD_LABEL = "com.callsign.standby"
 LAUNCHD_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 
 # Non-default ports, deliberately: 8000/5432 are common project defaults —
 # on this machine specifically they're already owned by an unrelated
 # project's Docker containers (MandateCheck), which was silently answering
-# Relay's own health checks with a look-alike 404 the whole time. Relay
+# Callsign's own health checks with a look-alike 404 the whole time. Callsign
 # gets its own port for the API and its own dedicated local Postgres
 # cluster/port, so the two can never collide regardless of which is
 # running.
 DEFAULT_REGISTRY_PORT = 8088
-# The shared, always-on hosted registry — every fresh `relay init` points
+# The shared, always-on hosted registry — every fresh `callsign setup` points
 # here by default so nobody has to know an IP, a --host flag, or run
 # their own registry. Running your own instead is still possible via
-# `relay init --registry-url ...` or `relay serve-registry`, but that's
+# `callsign setup --registry-url ...` or `callsign switchboard`, but that's
 # an explicit opt-in now, not the default.
+# NOTE: this hosted URL is intentionally NOT renamed in this pass — the
+# live Render service still answers at relay-registry.onrender.com;
+# renaming the actual deployment is a separate, later task.
 DEFAULT_REGISTRY_URL = "https://relay-registry.onrender.com"
 RELAY_PG_PORT = 5544
 RELAY_PG_DATA_DIR = REGISTRY_HOME / "pgdata"
@@ -164,8 +168,8 @@ def _pg_bin(name: str) -> str:
     return name  # let it fail with a clear "command not found" if truly absent
 
 
-# Moved to wiring/diagnostics.py so `relay doctor` (below) and the
-# `relay_status` MCP tool share one implementation instead of two. These
+# Moved to wiring/diagnostics.py so `callsign signal` (below) and the
+# `callsign_signal` MCP tool share one implementation instead of two. These
 # names are kept as thin aliases so every existing call site in this file
 # is unchanged.
 from wiring.diagnostics import (  # noqa: E402
@@ -175,7 +179,7 @@ from wiring.diagnostics import (  # noqa: E402
     registry_reachable as _registry_reachable,
     run_diagnostics,
 )
-from wiring.setup import ensure_listener_running  # noqa: E402
+from wiring.setup import ensure_listener_running, ensure_setup  # noqa: E402
 from wiring.atomic_json_store import atomic_write_json, locked  # noqa: E402
 
 
@@ -183,7 +187,13 @@ def _running_pid() -> int | None:
     return _pid_alive_from_file(REGISTRY_PID_FILE)
 
 
-def cmd_init(args: argparse.Namespace) -> None:
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Unifies the old `relay init` (write local config) + `relay
+    register` (register identity with the registry) into one step,
+    built on the same non-interactive wiring.setup.ensure_setup() the
+    callsign_setup MCP tool uses — the interactive
+    prompt/confirm-on-key-mismatch layer below is CLI-only, same as the
+    old cmd_init."""
     handle = args.handle or input("Your handle (e.g. vivek): ").strip()
     config = _default_config(handle)
     if args.capsule_dir:
@@ -201,14 +211,10 @@ def cmd_init(args: argparse.Namespace) -> None:
     if args.key_dir:
         config["key_dir"] = args.key_dir
 
-    if not args.force:
+    force = args.force
+    if not force:
         registered_pubkey = _registered_pubkey(config["registry_url"], handle)
-        if registered_pubkey is UNREACHABLE:
-            print(
-                f"note: couldn't reach {config['registry_url']} to check whether "
-                f"@{handle} is already registered — writing config unverified."
-            )
-        elif registered_pubkey is not None:
+        if registered_pubkey not in (UNREACHABLE, None):
             # Same generate-if-absent path _connect()/LocalIdentity.load_or_create
             # already uses everywhere else — computing the pubkey this
             # key_dir would produce is the only way to compare it.
@@ -229,9 +235,16 @@ def cmd_init(args: argparse.Namespace) -> None:
                 if answer not in ("y", "yes"):
                     print("aborted — config not written")
                     sys.exit(1)
+                force = True
 
-    _write_config(config)
+    result = ensure_setup(handle, config["capsule_dir"], config["registry_url"], config["key_dir"], CONFIG_PATH, force=force)
+    for warning in result.warnings:
+        print(f"note: {warning}")
     print(f"wrote {CONFIG_PATH}")
+    if result.already_registered:
+        print(f"@{handle} already registered")
+    elif result.relay_number:
+        print(f"registered @{handle} — your relay number: {result.relay_number} (give this out instead of your handle, like a phone number)")
 
 
 def _ensure_relay_postgres(database_url: str) -> None:
@@ -363,7 +376,7 @@ def cmd_registry_status(args: argparse.Namespace) -> None:
     print(f"reachable:    {reachable}")
     print(f"pid:          {pid if pid is not None else '(no pidfile / not running)'}")
     if not reachable:
-        print(f"not answering — run `relay serve-registry` (logs at {REGISTRY_LOG_FILE})")
+        print(f"not answering — run `callsign switchboard` (logs at {REGISTRY_LOG_FILE})")
 
 
 def cmd_whoami(args: argparse.Namespace) -> None:
@@ -388,7 +401,7 @@ def cmd_whoami(args: argparse.Namespace) -> None:
 
     if registered_pubkey not in (UNREACHABLE, None):
         # Own relay number — give this out like a phone number so others
-        # can `relay contacts add <name> <relay-number>` (this task's
+        # can `callsign contacts add <name> <relay-number>` (this task's
         # Part 1 item 7).
         own_identity = registry.get_identity(config["handle"])
         if own_identity is not None:
@@ -402,16 +415,16 @@ def _mcp_server_entry(config: dict) -> dict:
         "cwd": str(AGENT_DIR),
         "env": {
             "PYTHONPATH": str(AGENT_DIR),
-            "RELAY_HANDLE": config["handle"],
-            "RELAY_KEY_DIR": config["key_dir"],
-            "RELAY_CAPSULE_DIR": config["capsule_dir"],
-            "RELAY_REGISTRY_URL": config["registry_url"],
+            "CALLSIGN_HANDLE": config["handle"],
+            "CALLSIGN_KEY_DIR": config["key_dir"],
+            "CALLSIGN_CAPSULE_DIR": config["capsule_dir"],
+            "CALLSIGN_REGISTRY_URL": config["registry_url"],
         },
     }
 
 
 def _write_mcp_entry(mcp_config_path: Path, entry: dict) -> None:
-    """Assignment, not append — mcpServers["relay"] is overwritten with
+    """Assignment, not append — mcpServers["callsign"] is overwritten with
     the current entry every call, which is what makes re-running this
     idempotent: same key updated in place, never a duplicate second
     entry. Uses atomic_json_store.py's existing primitives, not new file
@@ -421,7 +434,7 @@ def _write_mcp_entry(mcp_config_path: Path, entry: dict) -> None:
             existing = json.loads(mcp_config_path.read_text())
         else:
             existing = {"mcpServers": {}}
-        existing.setdefault("mcpServers", {})["relay"] = entry
+        existing.setdefault("mcpServers", {})["callsign"] = entry
         atomic_write_json(str(mcp_config_path), existing)
 
 
@@ -450,7 +463,7 @@ def cmd_mcp_register(args: argparse.Namespace) -> None:
     entry = _mcp_server_entry(config)
 
     _write_mcp_entry(mcp_config_path, entry)
-    print(f"wrote relay entry to {mcp_config_path}")
+    print(f"wrote callsign entry to {mcp_config_path}")
 
     antigravity_path = _detect_antigravity_config()
     if antigravity_path:
@@ -467,34 +480,6 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         if not r.passed and r.fix:
             print(f"       fix: {r.fix}")
     sys.exit(0 if all(r.passed for r in results) else 1)
-
-
-def cmd_register(args: argparse.Namespace) -> None:
-    if not CONFIG_PATH.exists():
-        if not args.handle:
-            print(f"no config at {CONFIG_PATH} and no handle given — run `relay register <handle>` or `relay init`", file=sys.stderr)
-            sys.exit(1)
-        _write_config(_default_config(args.handle))
-        print(f"wrote {CONFIG_PATH}")
-
-    config = _load_config()
-    identity, registry = _connect(config)
-    try:
-        result = registry.register_identity(identity.handle, identity.public_key_hex, identity.encryption_public_key_hex)
-        print(f"registered @{identity.handle} (pubkey {identity.public_key_hex[:12]}...)")
-        print(f"your relay number: {result['relay_number']} — give this out instead of your handle, like a phone number")
-    except RegistryRejection as e:
-        # Checked by status_code, not e.outcome: identity_routes.py's
-        # duplicate-handle rejection returns a plain-string `detail`
-        # (FastAPI's default HTTPException shape), not the structured
-        # {"outcome": ..., "message": ...} body grant/relay endpoints
-        # use — so RegistryClient._raise_for_rejection can't populate
-        # e.outcome as "duplicate_handle" here; e.status_code is read
-        # before that parsing and is unaffected by the body's shape.
-        if e.status_code == 409:
-            print(f"@{identity.handle} already registered")
-        else:
-            raise
 
 
 def _wrap_preserving_paragraphs(text: str) -> str:
@@ -535,7 +520,7 @@ def _format_result(result: dict, *, recipient: str | None = None) -> str:
         lines += ["", f"Source: {', '.join(cited)}"]
     thread_id = result.get("thread_id")
     if thread_id:
-        lines += ["", f"Thread: {thread_id} — reply with: relay ask <recipient> '...' --thread {thread_id}"]
+        lines += ["", f"Thread: {thread_id} — reply with: callsign call <recipient> '...' --thread {thread_id}"]
     return "\n".join(lines)
 
 
@@ -614,16 +599,16 @@ def cmd_listen(args: argparse.Namespace) -> None:
     response_registry = PendingResponseRegistry()  # unused on the listening side; run_poll_loop requires it
     thread_store = _thread_store(config)
     disclosure_log = _disclosure_log(config)
-    # --headless: the actual worker `relay serve` spawns as a detached
+    # --headless: the actual worker `callsign standby` spawns as a detached
     # subprocess (see cmd_serve below) — passing a PendingApprovalStore
     # is what makes process_incoming_ask queue ad hoc requests instead
     # of blocking on terminal input() that no one is there to answer.
-    # Interactive `relay listen` never sets this (pending_approval_store
+    # Interactive `callsign pickup` never sets this (pending_approval_store
     # stays None), so its behavior is completely unchanged.
     pending_approval_store = _pending_approval_store(config) if args.headless else None
     if args.headless:
         print(f"listening headless as @{identity.handle} every {args.interval}s — approval requests will be "
-              f"queued and notified, not prompted here; run `relay pending` to answer them.")
+              f"queued and notified, not prompted here; run `callsign missed` to answer them.")
     else:
         print(f"listening as @{identity.handle} every {args.interval}s (Ctrl+C to stop)...")
     run_poll_loop(
@@ -632,7 +617,7 @@ def cmd_listen(args: argparse.Namespace) -> None:
     )
 
 
-def _launchd_plist_xml(relay_bin: str, interval: float) -> str:
+def _launchd_plist_xml(callsign_bin: str, interval: float) -> str:
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -640,8 +625,8 @@ def _launchd_plist_xml(relay_bin: str, interval: float) -> str:
     <key>Label</key><string>{LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{relay_bin}</string>
-        <string>listen</string>
+        <string>{callsign_bin}</string>
+        <string>pickup</string>
         <string>--headless</string>
         <string>--interval</string>
         <string>{interval}</string>
@@ -655,28 +640,28 @@ def _launchd_plist_xml(relay_bin: str, interval: float) -> str:
 """
 
 
-def _relay_bin() -> str:
-    """The installed `relay` console script's absolute path — launchd
+def _callsign_bin() -> str:
+    """The installed `callsign` console script's absolute path — launchd
     does not source shell rc files/PATH the way an interactive shell
     does, so the plist must point at an absolute path. Falls back to
     the venv-standard sibling-of-python location if `which` can't find
     it (e.g. this shell's venv isn't currently activated)."""
-    found = shutil.which("relay")
+    found = shutil.which("callsign")
     if found:
         return found
-    return str(Path(sys.executable).parent / "relay")
+    return str(Path(sys.executable).parent / "callsign")
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
     if args.install_autostart:
         REGISTRY_HOME.mkdir(parents=True, exist_ok=True)
         LAUNCHD_PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LAUNCHD_PLIST_PATH.write_text(_launchd_plist_xml(_relay_bin(), args.interval))
+        LAUNCHD_PLIST_PATH.write_text(_launchd_plist_xml(_callsign_bin(), args.interval))
         subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST_PATH)], capture_output=True)  # ok if not loaded
         result = subprocess.run(["launchctl", "load", "-w", str(LAUNCHD_PLIST_PATH)], capture_output=True, text=True)
         if result.returncode == 0:
             print(f"installed autostart: {LAUNCHD_PLIST_PATH}")
-            print("`relay serve` (headless) will now start automatically on login")
+            print("`callsign standby` (headless) will now start automatically on login")
         else:
             print(f"wrote {LAUNCHD_PLIST_PATH} but `launchctl load` failed: {result.stderr.strip()}")
         return
@@ -692,18 +677,18 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
     pid = _pid_alive_from_file(SERVE_PID_FILE)
     if pid is not None:
-        print(f"relay serve already running, pid {pid} — run `relay serve-status` for details")
+        print(f"callsign standby already running, pid {pid} — run `callsign standby-status` for details")
         return
 
     result = ensure_listener_running(
         REGISTRY_HOME, SERVE_PID_FILE, SERVE_META_FILE, SERVE_LOG_FILE, AGENT_DIR, interval=args.interval
     )
     if result["status"] == "started":
-        print(f"started relay serve, pid {result['pid']}")
+        print(f"started callsign standby, pid {result['pid']}")
         print(f"logs: {SERVE_LOG_FILE}")
-        print("ad hoc approval requests will show a native notification — run `relay pending` to answer them")
+        print("ad hoc approval requests will show a native notification — run `callsign missed` to answer them")
     elif result["status"] == "already_running":
-        print(f"relay serve already running, pid {result['pid']}")
+        print(f"callsign standby already running, pid {result['pid']}")
     else:
         print(f"started process (pid {result['pid']}) but it exited immediately — check {SERVE_LOG_FILE}")
 
@@ -712,7 +697,7 @@ def cmd_serve_status(args: argparse.Namespace) -> None:
     pid = _pid_alive_from_file(SERVE_PID_FILE)
     print(f"pid: {pid if pid is not None else '(no pidfile / not running)'}")
     if pid is None:
-        print(f"not running — run `relay serve` (logs at {SERVE_LOG_FILE})")
+        print(f"not running — run `callsign standby` (logs at {SERVE_LOG_FILE})")
         return
     if SERVE_META_FILE.exists():
         try:
@@ -729,7 +714,7 @@ def cmd_serve_status(args: argparse.Namespace) -> None:
 def cmd_serve_stop(args: argparse.Namespace) -> None:
     pid = _pid_alive_from_file(SERVE_PID_FILE)
     if pid is None:
-        print("relay serve is not running")
+        print("callsign standby is not running")
         SERVE_PID_FILE.unlink(missing_ok=True)
         SERVE_META_FILE.unlink(missing_ok=True)
         return
@@ -743,7 +728,7 @@ def cmd_serve_stop(args: argparse.Namespace) -> None:
         return
     SERVE_PID_FILE.unlink(missing_ok=True)
     SERVE_META_FILE.unlink(missing_ok=True)
-    print(f"stopped relay serve (was pid {pid})")
+    print(f"stopped callsign standby (was pid {pid})")
 
 
 def cmd_pending(args: argparse.Namespace) -> None:
@@ -753,8 +738,8 @@ def cmd_pending(args: argparse.Namespace) -> None:
     disclosure_log = _disclosure_log(config)
     pending_store = _pending_approval_store(config)
 
-    # Same auto-deny-on-expiry sweep `relay serve`'s poll loop already
-    # runs every tick — run it here too so `relay pending` never shows
+    # Same auto-deny-on-expiry sweep `callsign standby`'s poll loop already
+    # runs every tick — run it here too so `callsign missed` never shows
     # (or lets someone answer) a request that's already past its own
     # expiry_duration (CLAUDE.md §2: unanswered must always resolve to
     # auto-deny, never a silent grant, and never a stale live prompt).
@@ -835,7 +820,7 @@ def cmd_grant(args: argparse.Namespace) -> None:
 def cmd_grants(args: argparse.Namespace) -> None:
     """List grants THIS identity created for a grantee — existing
     registry.list_grants + flows._my_grants_as_grantor filtering, just
-    surfaced so a human has a grant_id to pass to `relay revoke`."""
+    surfaced so a human has a grant_id to pass to `callsign block`."""
     config = _load_config()
     identity, registry = _connect(config)
     grantee = resolve_recipient(_contacts_store(config), registry, args.grantee)
@@ -856,49 +841,48 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="event=%(message)s logger=%(name)s")
 
-    parser = argparse.ArgumentParser(prog="relay")
+    if migrate_from_relay_if_needed():
+        print(f"migrated local state from ~/.relay to {REGISTRY_HOME} (one-time; ~/.relay was left in place)", file=sys.stderr)
+
+    parser = argparse.ArgumentParser(prog="callsign")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_init = sub.add_parser("init", help="write local config (handle, capsule dir, registry URL)")
-    p_init.add_argument("--handle")
-    p_init.add_argument("--capsule-dir", dest="capsule_dir")
-    p_init.add_argument("--registry-url", dest="registry_url")
-    p_init.add_argument("--key-dir", dest="key_dir")
-    p_init.add_argument("--non-interactive", action="store_true")
-    p_init.add_argument("--force", action="store_true", help="skip the already-registered-with-a-different-key confirmation")
-    p_init.set_defaults(func=cmd_init)
+    p_setup = sub.add_parser("setup", help="write local config (handle, capsule dir, registry URL) and register this identity")
+    p_setup.add_argument("--handle")
+    p_setup.add_argument("--capsule-dir", dest="capsule_dir")
+    p_setup.add_argument("--registry-url", dest="registry_url")
+    p_setup.add_argument("--key-dir", dest="key_dir")
+    p_setup.add_argument("--non-interactive", action="store_true")
+    p_setup.add_argument("--force", action="store_true", help="skip the already-registered-with-a-different-key confirmation")
+    p_setup.set_defaults(func=cmd_setup)
 
-    p_whoami = sub.add_parser("whoami", help="show current config and whether the local key matches what's registered")
+    p_whoami = sub.add_parser("mynumber", help="show current config and whether the local key matches what's registered")
     p_whoami.set_defaults(func=cmd_whoami)
 
-    p_doctor = sub.add_parser("doctor", help="run diagnostic checks (registry reachable, key matches, listener running, MCP config)")
+    p_doctor = sub.add_parser("signal", help="run diagnostic checks (registry reachable, key matches, listener running, MCP config)")
     p_doctor.set_defaults(func=cmd_doctor)
 
-    p_mcp_register = sub.add_parser("mcp-register", help="write/repair this machine's MCP client config (.mcp.json) so `relay` runs as an MCP tool")
+    p_mcp_register = sub.add_parser("connect", help="write/repair this machine's MCP client config (.mcp.json) so `callsign` runs as an MCP tool")
     p_mcp_register.add_argument("--mcp-config-path", dest="mcp_config_path", default=None)
     p_mcp_register.set_defaults(func=cmd_mcp_register)
 
-    p_serve = sub.add_parser("serve-registry", help="start the local registry, detached, surviving this terminal closing")
+    p_serve = sub.add_parser("switchboard", help="start the local registry, detached, surviving this terminal closing")
     p_serve.add_argument("--port", type=int, default=DEFAULT_REGISTRY_PORT)
     p_serve.add_argument(
         "--host",
-        default=os.environ.get("RELAY_REGISTRY_HOST", "127.0.0.1"),
+        default=os.environ.get("CALLSIGN_REGISTRY_HOST", "127.0.0.1"),
         help="bind address (default 127.0.0.1, loopback-only; pass 0.0.0.0 or set "
-             "RELAY_REGISTRY_HOST=0.0.0.0 to make the registry reachable from other "
+             "CALLSIGN_REGISTRY_HOST=0.0.0.0 to make the registry reachable from other "
              "devices on the local network)",
     )
     p_serve.add_argument("--database-url", dest="database_url", default=None)
     p_serve.set_defaults(func=cmd_serve_registry)
 
-    p_regstatus = sub.add_parser("registry-status", help="check whether the local registry is up and reachable")
+    p_regstatus = sub.add_parser("switchboard-status", help="check whether the local registry is up and reachable")
     p_regstatus.add_argument("--port", type=int, default=DEFAULT_REGISTRY_PORT)
     p_regstatus.set_defaults(func=cmd_registry_status)
 
-    p_register = sub.add_parser("register", help="register this identity's public keys with the registry")
-    p_register.add_argument("handle", nargs="?", help="only needed the first time, if no config exists yet")
-    p_register.set_defaults(func=cmd_register)
-
-    p_ask = sub.add_parser("ask", help="ask another handle a question")
+    p_ask = sub.add_parser("call", help="ask another handle a question")
     p_ask.add_argument("recipient")
     p_ask.add_argument("question")
     p_ask.add_argument("--thread", default=None, help="continue an existing conversation by its thread id")
@@ -911,41 +895,41 @@ def main() -> None:
     p_ask.add_argument("--wait-interval", type=float, default=5.0)
     p_ask.set_defaults(func=cmd_ask)
 
-    p_check = sub.add_parser("check", help="check whether a pending ask has been answered yet")
+    p_check = sub.add_parser("callback", help="check whether a pending ask has been answered yet")
     p_check.add_argument("request_id")
     p_check.set_defaults(func=cmd_check)
 
-    p_listen = sub.add_parser("listen", help="poll for incoming asks and handle live approval prompts")
+    p_listen = sub.add_parser("pickup", help="poll for incoming asks and handle live approval prompts")
     p_listen.add_argument("--interval", type=float, default=2.0)
     p_listen.add_argument(
         "--headless", action="store_true",
-        help="queue ad hoc approvals + notify instead of blocking on terminal input (used by `relay serve`)",
+        help="queue ad hoc approvals + notify instead of blocking on terminal input (used by `callsign standby`)",
     )
     p_listen.set_defaults(func=cmd_listen)
 
     p_serve = sub.add_parser(
-        "serve", help="run `relay listen --headless` as a detached background process, surviving this terminal closing",
+        "standby", help="run `callsign pickup --headless` as a detached background process, surviving this terminal closing",
     )
     p_serve.add_argument("--interval", type=float, default=2.0)
     p_serve.add_argument(
         "--install-autostart", action="store_true",
-        help="install a launchd agent (macOS only) so `relay serve` restarts automatically on login",
+        help="install a launchd agent (macOS only) so `callsign standby` restarts automatically on login",
     )
     p_serve.add_argument("--uninstall-autostart", action="store_true", help="remove the launchd autostart agent")
     p_serve.set_defaults(func=cmd_serve)
 
-    p_serve_status = sub.add_parser("serve-status", help="check whether `relay serve` is running, pid, uptime")
+    p_serve_status = sub.add_parser("standby-status", help="check whether `callsign standby` is running, pid, uptime")
     p_serve_status.set_defaults(func=cmd_serve_status)
 
-    p_serve_stop = sub.add_parser("serve-stop", help="stop the running `relay serve` background process")
+    p_serve_stop = sub.add_parser("standby-stop", help="stop the running `callsign standby` background process")
     p_serve_stop.set_defaults(func=cmd_serve_stop)
 
     p_pending = sub.add_parser(
-        "pending", help="answer approval requests queued while `relay serve` was running headless",
+        "missed", help="answer approval requests queued while `callsign standby` was running headless",
     )
     p_pending.set_defaults(func=cmd_pending)
 
-    p_thread = sub.add_parser("thread", help="show the full local history of a conversation thread")
+    p_thread = sub.add_parser("history", help="show the full local history of a conversation thread")
     p_thread.add_argument("thread_id")
     p_thread.set_defaults(func=cmd_thread)
 
@@ -964,16 +948,16 @@ def main() -> None:
     p_contacts_remove.add_argument("name")
     p_contacts_remove.set_defaults(func=cmd_contacts_remove)
 
-    p_grant = sub.add_parser("grant", help="create a standing grant for a set of capsule IDs")
+    p_grant = sub.add_parser("allow", help="create a standing grant for a set of capsule IDs")
     p_grant.add_argument("grantee")
     p_grant.add_argument("--scope", required=True, help="comma-separated capsule IDs")
     p_grant.set_defaults(func=cmd_grant)
 
-    p_grants = sub.add_parser("grants", help="list grants you created for a grantee (to find a grant_id to revoke)")
+    p_grants = sub.add_parser("allowed", help="list grants you created for a grantee (to find a grant_id to revoke)")
     p_grants.add_argument("grantee")
     p_grants.set_defaults(func=cmd_grants)
 
-    p_revoke = sub.add_parser("revoke", help="revoke a standing grant by its grant_id (see `relay grants`)")
+    p_revoke = sub.add_parser("block", help="revoke a standing grant by its grant_id (see `callsign allowed`)")
     p_revoke.add_argument("grant_id")
     p_revoke.set_defaults(func=cmd_revoke)
 
