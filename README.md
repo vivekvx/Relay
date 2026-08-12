@@ -17,13 +17,13 @@ supported:
 (replace `<handle>` with a handle for yourself, e.g. your first name):
 
 ```
-curl -fsSL https://raw.githubusercontent.com/vivekvx/Relay/main/install.sh | bash -s <handle>
+curl -fsSL https://raw.githubusercontent.com/vivekvx/callsign/main/install.sh | bash -s <handle>
 ```
 
 `install.sh` is a short, readable script — clone it and read it yourself
 first if you'd rather not pipe curl straight into bash (a reasonable
-thing to want): https://github.com/vivekvx/Relay/blob/main/install.sh.
-It does exactly one thing: clone the repo into `~/relay`, then run
+thing to want): https://github.com/vivekvx/callsign/blob/main/install.sh.
+It does exactly one thing: clone the repo into `~/callsign`, then run
 `setup.sh <handle>` from inside it. No other network calls, no
 telemetry, nothing hidden.
 
@@ -32,7 +32,7 @@ before running anything, or someone sent you this repo to set up
 yourself, paste this to your own coding agent (Claude Code, Codex,
 Antigravity — any of them; nothing below assumes which one):
 
-> Clone https://github.com/vivekvx/Relay.git, run `./setup.sh <a
+> Clone https://github.com/vivekvx/callsign.git, run `./setup.sh <
 > handle for me, e.g. my first name>` from inside it, and tell me my
 > Callsign handle and relay number once it's done.
 

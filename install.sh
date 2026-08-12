@@ -5,15 +5,16 @@
 #
 # Usage: curl -fsSL <raw-url>/install.sh | bash -s <handle>
 #
-# Clone location: $RELAY_INSTALL_DIR if set, else ~/relay. Home directory
-# by default (not the caller's cwd) since a curl|bash one-liner can be run
-# from anywhere — cwd might already be an unrelated git repo or a messy
-# Downloads folder; ~/relay is a stable, predictable spot every time.
+# Clone location: $CALLSIGN_INSTALL_DIR if set, else ~/callsign. Home
+# directory by default (not the caller's cwd) since a curl|bash one-liner
+# can be run from anywhere — cwd might already be an unrelated git repo
+# or a messy Downloads folder; ~/callsign is a stable, predictable spot
+# every time.
 
 set -uo pipefail
 
-REPO_URL="https://github.com/vivekvx/Relay.git"
-TARGET_DIR="${RELAY_INSTALL_DIR:-$HOME/relay}"
+REPO_URL="https://github.com/vivekvx/callsign.git"
+TARGET_DIR="${CALLSIGN_INSTALL_DIR:-$HOME/callsign}"
 HANDLE="${1:-}"
 
 fail() {
@@ -27,17 +28,17 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 if [ -d "$TARGET_DIR" ]; then
-    if [ -d "$TARGET_DIR/.git" ] && git -C "$TARGET_DIR" remote get-url origin 2>/dev/null | grep -qi "vivekvx/Relay"; then
-        echo "==> $TARGET_DIR is already a Relay checkout, updating it"
+    if [ -d "$TARGET_DIR/.git" ] && git -C "$TARGET_DIR" remote get-url origin 2>/dev/null | grep -qiE "vivekvx/(callsign|Relay)"; then
+        echo "==> $TARGET_DIR is already a Callsign checkout, updating it"
         if [ -n "$(git -C "$TARGET_DIR" status --porcelain)" ]; then
             fail "$TARGET_DIR has uncommitted local changes" "commit/stash them, or remove the directory and re-run this installer"
         fi
         git -C "$TARGET_DIR" pull --ff-only || fail "git pull failed in $TARGET_DIR" "resolve manually, then run: cd $TARGET_DIR && ./setup.sh $HANDLE"
     else
-        fail "$TARGET_DIR already exists and isn't a Relay checkout" "set RELAY_INSTALL_DIR to a different path and re-run, e.g.: RELAY_INSTALL_DIR=~/relay2 curl -fsSL <url>/install.sh | bash -s $HANDLE"
+        fail "$TARGET_DIR already exists and isn't a Callsign checkout" "set CALLSIGN_INSTALL_DIR to a different path and re-run, e.g.: CALLSIGN_INSTALL_DIR=~/callsign2 curl -fsSL <url>/install.sh | bash -s $HANDLE"
     fi
 else
-    echo "==> Cloning Relay into $TARGET_DIR"
+    echo "==> Cloning Callsign into $TARGET_DIR"
     git clone "$REPO_URL" "$TARGET_DIR" || fail "git clone failed"
 fi
 
