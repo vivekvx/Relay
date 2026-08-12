@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Relay one-shot setup — steps 2-6 of the Quick Start in README.md
+# Callsign one-shot setup — steps 2-6 of the Quick Start in README.md
 # (step 1, cloning the repo, happens before this script is even
 # reachable — see README.md's "Quick Start" for the exact one-line
 # instruction a person pastes to their own coding agent).
@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 VENV_DIR="$SCRIPT_DIR/.venv"
-RELAY_BIN="$VENV_DIR/bin/relay"
+CALLSIGN_BIN="$VENV_DIR/bin/callsign"
 DEFAULT_REGISTRY_URL="https://relay-registry.onrender.com"
 
 # ---------------------------------------------------------------------
@@ -77,7 +77,7 @@ for candidate in "$(command -v initdb 2>/dev/null | xargs dirname 2>/dev/null ||
     fi
 done
 if [ -z "$PG_BIN_DIR" ]; then
-    echo "  note: no local PostgreSQL binaries found — fine for normal use (the shared hosted registry needs none of this locally); only needed if you later opt into running your own registry via 'relay serve-registry'."
+    echo "  note: no local PostgreSQL binaries found — fine for normal use (the shared hosted registry needs none of this locally); only needed if you later opt into running your own registry via 'callsign switchboard'."
 else
     ok "PostgreSQL binaries at $PG_BIN_DIR (only used if you opt into a local registry)"
 fi
@@ -107,8 +107,8 @@ step "Installing Python dependencies"
 "$VENV_DIR/bin/pip" install -q fastapi uvicorn sqlalchemy psycopg psycopg-binary httpx mcp maturin \
     || fail "pip install of core dependencies failed" "re-run this script — pip install is safe to retry"
 "$VENV_DIR/bin/pip" install -q -e agent \
-    || fail "pip install -e agent failed (installs the 'relay' CLI console script)" "check agent/pyproject.toml is present and valid"
-ok "fastapi, uvicorn, sqlalchemy, psycopg, httpx, mcp, maturin, and the 'relay' CLI installed"
+    || fail "pip install -e agent failed (installs the 'callsign' CLI console script)" "check agent/pyproject.toml is present and valid"
+ok "fastapi, uvicorn, sqlalchemy, psycopg, httpx, mcp, maturin, and the 'callsign' CLI installed"
 
 # ---------------------------------------------------------------------
 # Step 3: identity/ Rust bridge (idempotent — maturin develop rebuilds
@@ -118,7 +118,7 @@ step "Building identity/'s Rust bridge (maturin develop)"
 (
     cd identity/python
     "$VENV_DIR/bin/maturin" develop --release
-) || fail "maturin develop failed" "check 'cargo build' alone works inside identity/ first — this is almost always a Rust toolchain issue, not a Relay one"
+) || fail "maturin develop failed" "check 'cargo build' alone works inside identity/ first — this is almost always a Rust toolchain issue, not a Callsign one"
 ok "relay_identity built and installed into the venv"
 
 # ---------------------------------------------------------------------
@@ -126,7 +126,7 @@ ok "relay_identity built and installed into the venv"
 # registry/Postgres startup here anymore — every install points at one
 # always-on shared registry by default (see agent/cli.py's
 # DEFAULT_REGISTRY_URL). Running your own registry instead is still
-# possible (relay serve-registry, or `relay init --registry-url ...`)
+# possible (callsign switchboard, or `callsign setup --registry-url ...`)
 # but is an explicit opt-in, not what a fresh install does.
 # ---------------------------------------------------------------------
 step "Checking the shared hosted registry is reachable"
@@ -134,12 +134,13 @@ if curl -fsSL -o /dev/null --max-time 60 "$DEFAULT_REGISTRY_URL/openapi.json"; t
     ok "hosted registry reachable at $DEFAULT_REGISTRY_URL"
 else
     echo "  note: couldn't reach $DEFAULT_REGISTRY_URL just now — it may be waking from" \
-         "an idle spin-down (free tier, can take ~50s). Continuing; 'relay register'" \
+         "an idle spin-down (free tier, can take ~50s). Continuing; 'callsign setup'" \
          "below will retry."
 fi
 
 # ---------------------------------------------------------------------
-# Step 5: handle + registration
+# Step 5: handle + registration (callsign setup does both in one call —
+# the old separate init/register steps were unified upstream)
 # ---------------------------------------------------------------------
 HANDLE="${1:-}"
 if [ -z "$HANDLE" ]; then
@@ -151,31 +152,28 @@ if [ -z "$HANDLE" ]; then
     fail "no handle given" "run: ./setup.sh <handle>   (e.g. ./setup.sh vivek)"
 fi
 
-step "Writing local config for @$HANDLE"
-"$RELAY_BIN" init --handle "$HANDLE" --non-interactive \
-    || fail "relay init failed" "if this is a re-run with a DIFFERENT identity than before, pass --force via: $RELAY_BIN init --handle $HANDLE --non-interactive --force"
-ok "config written to ~/.relay/config.toml"
-
-step "Registering @$HANDLE with the local registry"
-"$RELAY_BIN" register "$HANDLE" || fail "relay register failed" "check the output above — 'already registered' is fine (idempotent), anything else is a real failure"
+step "Writing local config and registering @$HANDLE"
+"$CALLSIGN_BIN" setup --handle "$HANDLE" --non-interactive \
+    || fail "callsign setup failed" "if this is a re-run with a DIFFERENT identity than before, pass --force via: $CALLSIGN_BIN setup --handle $HANDLE --non-interactive --force"
+ok "config written to ~/.callsign/config.toml"
 
 # ---------------------------------------------------------------------
 # Step 6: health check
 # ---------------------------------------------------------------------
 step "Confirming everything actually works"
-WHOAMI_OUTPUT="$("$RELAY_BIN" whoami)"
-echo "$WHOAMI_OUTPUT"
-if echo "$WHOAMI_OUTPUT" | grep -q "MISMATCH"; then
-    fail "relay whoami reports a key mismatch" "the registered pubkey doesn't match this machine's local key — re-run with --force on relay init, or pick a different handle"
+MYNUMBER_OUTPUT="$("$CALLSIGN_BIN" mynumber)"
+echo "$MYNUMBER_OUTPUT"
+if echo "$MYNUMBER_OUTPUT" | grep -q "MISMATCH"; then
+    fail "callsign mynumber reports a key mismatch" "the registered pubkey doesn't match this machine's local key — re-run with --force on callsign setup, or pick a different handle"
 fi
-if ! echo "$WHOAMI_OUTPUT" | grep -q "relay_number:"; then
-    fail "relay whoami did not report a relay_number — registration may not have completed" "run: $RELAY_BIN register $HANDLE   then re-run this script"
+if ! echo "$MYNUMBER_OUTPUT" | grep -q "relay_number:"; then
+    fail "callsign mynumber did not report a relay_number — registration may not have completed" "run: $CALLSIGN_BIN setup --handle $HANDLE --non-interactive   then re-run this script"
 fi
-RELAY_NUMBER="$(echo "$WHOAMI_OUTPUT" | awk -F': ' '/^relay_number:/ {print $2}')"
+RELAY_NUMBER="$(echo "$MYNUMBER_OUTPUT" | awk -F': ' '/^relay_number:/ {print $2}')"
 
-printf '\n\033[1;32m✓ Relay is set up.\033[0m\n\n'
+printf '\n\033[1;32m✓ Callsign is set up.\033[0m\n\n'
 printf '  handle:       @%s\n' "$HANDLE"
 printf '  relay number: %s   (give this out like a phone number)\n\n' "$RELAY_NUMBER"
 printf '  Next: exchange relay numbers with a friend, then run:\n'
-printf '    %s contacts add <name> <their-relay-number>\n' "$RELAY_BIN"
-printf '    %s ask <name> "your question"\n\n' "$RELAY_BIN"
+printf '    %s contacts add <name> <their-relay-number>\n' "$CALLSIGN_BIN"
+printf '    %s call <name> "your question"\n\n' "$CALLSIGN_BIN"

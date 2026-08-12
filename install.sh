@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# install.sh: clones Relay, then runs its setup.sh <handle> — nothing else.
+# install.sh: installs Callsign — clones this repo, then runs its
+# setup.sh <handle> — nothing else.
 # Read this file before piping it to bash if you'd rather not; it's short.
 #
 # Usage: curl -fsSL <raw-url>/install.sh | bash -s <handle>

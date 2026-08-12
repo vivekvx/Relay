@@ -1,0 +1,10 @@
+[mcp_servers.callsign]
+command = "/Users/vivek/.superset/projects/Relay/.venv/bin/python3"
+args = ["/Users/vivek/.superset/projects/Relay/agent/mcp_server.py"]
+
+[mcp_servers.callsign.env]
+PYTHONPATH = "/Users/vivek/.superset/projects/Relay/agent"
+CALLSIGN_HANDLE = "vivek"
+CALLSIGN_KEY_DIR = "/Users/vivek/.callsign/keys/vivek"
+CALLSIGN_CAPSULE_DIR = "/Users/vivek/.callsign/capsules"
+CALLSIGN_REGISTRY_URL = "https://relay-registry.onrender.com"

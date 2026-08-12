@@ -1,4 +1,4 @@
-# Relay
+# Callsign
 
 A "phone number" for your coding agent — lets your Claude Code / terminal
 agent ask another person's agent a question, with the responding agent
@@ -8,9 +8,10 @@ operating instructions before writing any code in this repo.
 
 ## Quick Start
 
-The whole point of Relay is that a friend gets their own local Relay set
-up in one message, not by manually running a dozen commands. Two ways to
-do it — pick whichever you're comfortable with, both are fully supported:
+The whole point of Callsign is that a friend gets their own local Callsign
+set up in one message, not by manually running a dozen commands. Two ways
+to do it — pick whichever you're comfortable with, both are fully
+supported:
 
 **Option A — one-line install.** Paste this into your own terminal
 (replace `<handle>` with a handle for yourself, e.g. your first name):
@@ -22,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/vivekvx/Relay/main/install.sh | bas
 `install.sh` is a short, readable script — clone it and read it yourself
 first if you'd rather not pipe curl straight into bash (a reasonable
 thing to want): https://github.com/vivekvx/Relay/blob/main/install.sh.
-It does exactly one thing: clone Relay into `~/relay`, then run
+It does exactly one thing: clone the repo into `~/relay`, then run
 `setup.sh <handle>` from inside it. No other network calls, no
 telemetry, nothing hidden.
 
@@ -33,7 +34,7 @@ Antigravity — any of them; nothing below assumes which one):
 
 > Clone https://github.com/vivekvx/Relay.git, run `./setup.sh <a
 > handle for me, e.g. my first name>` from inside it, and tell me my
-> Relay handle and relay number once it's done.
+> Callsign handle and relay number once it's done.
 
 Both options land in the same place. `setup.sh` creates a Python venv,
 installs dependencies, builds `identity/`'s Rust bridge, registers your
@@ -46,9 +47,9 @@ machine — never uploaded anywhere. Only routing (handle → endpoint) and
 audit metadata (who queried whom, when) live on the shared registry;
 capsule content and query/response text never do (see `PRD.md` §4 for
 the hard boundary). Running your own registry instead of the shared one
-is possible (`relay serve-registry`, or `relay init --registry-url ...`)
-but is an explicit opt-in for advanced/private use, not what a normal
-install does.
+is possible (`callsign switchboard`, or `callsign setup --registry-url
+...`) but is an explicit opt-in for advanced/private use, not what a
+normal install does.
 
 **Requires** (macOS only for this pass — Linux/Windows setup is a
 known, stated gap, not silently unsupported): Python 3.12+ and
@@ -64,8 +65,8 @@ opaque routing id, same trust model as a phone number) to a friend out
 of band (text, Slack, in person), and save theirs:
 
 ```
-relay contacts add <name> <their-relay-number>
-relay ask <name> "your question"
+callsign contacts add <name> <their-relay-number>
+callsign call <name> "your question"
 ```
 
 The rest of this README is reference detail for the same CLI/MCP
@@ -75,60 +76,59 @@ surface `setup.sh` just set up for you.
 
 ```
 cd agent && ../.venv/bin/pip install -e .
-relay serve-registry        # one-time+: starts the local registry, detached, own Postgres — see below
-relay init                  # one-time: writes ~/.relay/config.toml (handle, capsule dir, registry URL)
-relay register              # publishes your public keys to the registry
-relay whoami                 # confirms your local key actually matches what's registered
-relay ask <handle> "question"
-relay check <request_id>     # follow up on a "pending" ask later
-relay listen                 # blocks, answers incoming asks with a live terminal approval prompt
-relay grant <handle> --scope <capsule-id,...>
-relay grants <handle>        # look up a grant_id to revoke
-relay revoke <grant_id>
+callsign switchboard        # one-time+: starts the local registry, detached, own Postgres — see below
+callsign setup               # one-time: writes ~/.callsign/config.toml and registers your identity
+callsign mynumber            # confirms your local key actually matches what's registered
+callsign call <handle> "question"
+callsign callback <request_id>   # follow up on a "pending" call later
+callsign pickup               # blocks, answers incoming calls with a live terminal approval prompt
+callsign allow <handle> --scope <capsule-id,...>
+callsign allowed <handle>     # look up a grant_id to revoke
+callsign block <grant_id>
 ```
 
 ## Running the registry locally
 
-`relay serve-registry` starts the registry detached (`setsid`-style —
+`callsign switchboard` starts the registry detached (`setsid`-style —
 survives the launching terminal closing) on **its own dedicated port and
 Postgres cluster**, not the common defaults (8000 / 5432). This is
 deliberate: on a dev machine running other projects, those default
 ports are exactly where an unrelated project's Docker container is
 likely already listening — which happened during this project's own
 development (an unrelated FastAPI backend was silently answering
-Relay's health checks on port 8000 for days before anyone noticed,
+Callsign's health checks on port 8000 for days before anyone noticed,
 because both apps' generic 404 responses looked alike).
 
 - API: `http://localhost:8088` (override with `--port`). Bound to
   `127.0.0.1` by default — not reachable from other devices on your
   network, only this machine. To let another device on your LAN reach
-  it, pass `--host 0.0.0.0` or set `RELAY_REGISTRY_HOST=0.0.0.0`:
-  `relay serve-registry --host 0.0.0.0`. This is real network exposure,
+  it, pass `--host 0.0.0.0` or set `CALLSIGN_REGISTRY_HOST=0.0.0.0`:
+  `callsign switchboard --host 0.0.0.0`. This is real network exposure,
   opt-in only — anyone on the same network can then reach these HTTP
   endpoints (still rate-limited, still routing/audit metadata only, per
   this project's non-negotiable no-capsule-content boundary — the
   security model doesn't change, only who can reach the door).
-- Postgres: a dedicated cluster at `~/.relay/pgdata`, port `5544`,
+- Postgres: a dedicated cluster at `~/.callsign/pgdata`, port `5544`,
   database `relay_registry` (override with `--database-url`)
-- Logs: `~/.relay/registry.log` (API), `~/.relay/pg.log` (Postgres)
-- PID: `~/.relay/registry.pid`
+- Logs: `~/.callsign/registry.log` (API), `~/.callsign/pg.log` (Postgres)
+- PID: `~/.callsign/serve.pid`
 
 ```
-relay serve-registry     # idempotent — says "already running" if it is
-relay registry-status    # reachable? pid? verified as Relay specifically,
-                          # not just "something answered" (see note above)
+callsign switchboard          # idempotent — says "already running" if it is
+callsign switchboard-status   # reachable? pid? verified as Relay Registry specifically,
+                               # not just "something answered" (see note above)
 ```
 
-`registry-status`/`serve-registry`'s reachability check verifies the
+`switchboard-status`/`switchboard`'s reachability check verifies the
 OpenAPI title is literally `"Relay Registry"` — not just that some HTTP
 server 404s on an unknown route, which is what let the MandateCheck
 collision go unnoticed.
 
-## Using Relay from inside your coding agent (MCP)
+## Using Callsign from inside your coding agent (MCP)
 
 `agent/mcp_server.py` is a standard MCP server: it speaks JSON-RPC over
-stdio, exposes `relay_ask`/`relay_grant`/`relay_revoke`/`relay_check`/
-`relay_pending_requests`/`relay_respond_to_request` with plain JSON
+stdio, exposes `callsign_call`/`callsign_allow`/`callsign_block`/
+`callsign_callback`/`callsign_missed`/`callsign_answer` with plain JSON
 Schema `inputSchema`s, and returns results as standard text
 content-blocks. Nothing in it is Claude-Code-specific — it's been
 verified working against Claude Code and against a real Antigravity/
@@ -143,11 +143,11 @@ The command and env every client needs (fill in your own paths/handle):
 command: /absolute/path/to/Relay/.venv/bin/python3
 args:    ["/absolute/path/to/Relay/agent/mcp_server.py"]
 env:
-  PYTHONPATH:          /absolute/path/to/Relay/agent
-  RELAY_HANDLE:        your-handle
-  RELAY_KEY_DIR:       /absolute/path/to/keys/dir
-  RELAY_CAPSULE_DIR:   /absolute/path/to/capsules/dir
-  RELAY_REGISTRY_URL:  https://relay-registry.onrender.com
+  PYTHONPATH:            /absolute/path/to/Relay/agent
+  CALLSIGN_HANDLE:       your-handle
+  CALLSIGN_KEY_DIR:      /absolute/path/to/keys/dir
+  CALLSIGN_CAPSULE_DIR:  /absolute/path/to/capsules/dir
+  CALLSIGN_REGISTRY_URL: https://relay-registry.onrender.com
 ```
 
 ### Claude Code
@@ -157,15 +157,15 @@ Project-scoped: create `.mcp.json` in the repo root:
 ```json
 {
   "mcpServers": {
-    "relay": {
+    "callsign": {
       "command": "/absolute/path/to/Relay/.venv/bin/python3",
       "args": ["/absolute/path/to/Relay/agent/mcp_server.py"],
       "env": {
         "PYTHONPATH": "/absolute/path/to/Relay/agent",
-        "RELAY_HANDLE": "your-handle",
-        "RELAY_KEY_DIR": "/absolute/path/to/keys/dir",
-        "RELAY_CAPSULE_DIR": "/absolute/path/to/capsules/dir",
-        "RELAY_REGISTRY_URL": "https://relay-registry.onrender.com"
+        "CALLSIGN_HANDLE": "your-handle",
+        "CALLSIGN_KEY_DIR": "/absolute/path/to/keys/dir",
+        "CALLSIGN_CAPSULE_DIR": "/absolute/path/to/capsules/dir",
+        "CALLSIGN_REGISTRY_URL": "https://relay-registry.onrender.com"
       }
     }
   }
@@ -174,7 +174,7 @@ Project-scoped: create `.mcp.json` in the repo root:
 
 Restart Claude Code (or run `/mcp` to reconnect) after adding this.
 
-Instead of hand-writing the JSON above, `relay mcp-register` will
+Instead of hand-writing the JSON above, `callsign connect` will
 write (or repair) this same `.mcp.json` entry for you — idempotent, safe
 to re-run, corrects drifted values (wrong `cwd`/env) rather than only
 creating a fresh file. **Claude Code (`.mcp.json`) support is
@@ -185,23 +185,23 @@ it works there before relying on it.**
 
 ### Antigravity (and the Gemini CLI, which shares the same config)
 
-Global, not project-scoped: add a `relay` entry under `mcpServers` in
+Global, not project-scoped: add a `callsign` entry under `mcpServers` in
 `~/.gemini/antigravity/mcp_config.json` (this is a symlink to the real
 file at `~/.gemini/config/mcp_config.json`, shared with the Gemini
-CLI — one entry registers Relay for both):
+CLI — one entry registers Callsign for both):
 
 ```json
 {
   "mcpServers": {
-    "relay": {
+    "callsign": {
       "command": "/absolute/path/to/Relay/.venv/bin/python3",
       "args": ["/absolute/path/to/Relay/agent/mcp_server.py"],
       "env": {
         "PYTHONPATH": "/absolute/path/to/Relay/agent",
-        "RELAY_HANDLE": "your-handle",
-        "RELAY_KEY_DIR": "/absolute/path/to/keys/dir",
-        "RELAY_CAPSULE_DIR": "/absolute/path/to/capsules/dir",
-        "RELAY_REGISTRY_URL": "https://relay-registry.onrender.com"
+        "CALLSIGN_HANDLE": "your-handle",
+        "CALLSIGN_KEY_DIR": "/absolute/path/to/keys/dir",
+        "CALLSIGN_CAPSULE_DIR": "/absolute/path/to/capsules/dir",
+        "CALLSIGN_REGISTRY_URL": "https://relay-registry.onrender.com"
       }
     }
   }
@@ -221,11 +221,11 @@ exact file/location).
 ### Behavior once connected
 
 Asking your agent something like "ask @friend why they chose postgres
-over redis" calls the real `relay_ask` tool, which runs the exact same
-`wiring/flows.py` code the CLI and registry use — no terminal script
-involved.
+over redis" calls the real `callsign_call` tool, which runs the exact
+same `wiring/flows.py` code the CLI and registry use — no terminal
+script involved.
 
-Note: `relay_ask`'s MCP tool call only waits ~5 seconds for a live
+Note: `callsign_call`'s MCP tool call only waits ~5 seconds for a live
 answer (`dispatch_tool_call`'s default); if the other side hasn't
 approved yet, it returns `{"status": "pending", ...}` — the answer
 still arrives once approved, but this one-shot MCP call has already
